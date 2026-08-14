@@ -1,0 +1,13 @@
+name: deploy-webapp
+on:
+  push: { branches: [main] }
+permissions: { pages: write, id-token: write }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: webapp }
+      - uses: actions/deploy-pages@v4

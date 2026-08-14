@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "light": {"mode": "sun",
+            "sun": {"auto": true, "datetime_utc": "2026-08-15T17:30:00",
+                     "lat": 43.93, "lon": 10.92, "projection_azimuth_deg": 285}},
+  "plane": {"distance_m": 5.0, "tilt_deg": 0.0},
+  "device": {"center_m": [0, 0, 1.3], "tilt_deg": "auto",
+             "mirror_shape": "hex", "mirror_width_mm": 25.4, "gap_mm": 2.0,
+             "grid": {"type": "hex", "radius": 5}},
+  "text": {"string": "CIAO \u2665", "pitch_cm": 7.0},
+  "pillar": {"base_height_mm": 12.0, "margin_mm": 1.0, "aligner": true}
+}

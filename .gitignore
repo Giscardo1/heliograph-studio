@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+output/
+node_modules/
+webapp/bundle.js
+.DS_Store
