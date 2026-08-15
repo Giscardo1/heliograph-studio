@@ -114,6 +114,30 @@ function match(mirrors, targets) {
 }
 
 /* ---------- posizione solare NOAA (identica a solar.py) ---------- */
+function airMass(elevDeg) {
+  // Kasten & Young (1989): massa d'aria ottica in funzione dell'altezza solare apparente
+  const g = Math.max(0.5, elevDeg);
+  return 1 / (Math.sin(g * D2R) + 0.50572 * Math.pow(g + 6.07995, -1.6364));
+}
+function sunDirectLux(elevDeg) {
+  // illuminanza diretta normale in cielo sereno: 133 klx attenuati con AM (esponente empirico 0.678)
+  if (elevDeg <= 0) return 0;
+  return 133000 * Math.pow(0.7, Math.pow(airMass(elevDeg), 0.678));
+}
+function slopeBlurRad(slopeMrad) {
+  // errore di pendenza sigma sullo specchio -> il raggio riflesso devia di 2*sigma;
+  // angolo pieno equivalente (contenimento 1-sigma della direzione): 4*sigma
+  return 4 * (slopeMrad || 0) / 1000;
+}
+function solarDivergence(dateLocal) {
+  // diametro angolare apparente del disco solare (rad, angolo pieno)
+  // R(AU) = 1.00014 - 0.01671 cos g - 0.00014 cos 2g,  g = anomalia media (perielio ~3 gen)
+  const d = new Date(dateLocal || Date.now());
+  const N = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+  const g = 2 * Math.PI * (N - 3) / 365.25;
+  const R = 1.00014 - 0.01671 * Math.cos(g) - 0.00014 * Math.cos(2 * g);
+  return 0.009310 / R;   // 0.5246 (afelio) ... 0.5425 (perielio) gradi
+}
 function solarPosition(dateUTC, lat, lon) {
   const start = Date.UTC(dateUTC.getUTCFullYear(), 0, 0);
   const doy = Math.floor((dateUTC.getTime() - start) / 86400000);
@@ -139,15 +163,26 @@ function solarPosition(dateUTC, lat, lon) {
 
 /* ---------- ottica (identica a optics.py) ---------- */
 const sunDirection = (e, a) => [Math.cos(e * D2R) * Math.sin(a * D2R), -Math.cos(e * D2R) * Math.cos(a * D2R), Math.sin(e * D2R)];
-function planeFrame(dist, tilt, center, centerH) {
+function nowLocalISO() {
+  const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+function targetHeight(tiltDeg, planeH, ceilH) {
+  // 0° pavimento (z=0) · 90° parete (z=planeH) · >90° superficie sopra la testa (z=ceilH)
+  return tiltDeg <= 90 ? planeH * Math.sin(tiltDeg * D2R) : (ceilH ?? 2.7);
+}
+function planeFrame(dist, tilt, center, centerH, ceilH) {
   const t = tilt * D2R;
   const nV = [0, -Math.sin(t), Math.cos(t)];
   const ph = centerH === undefined ? center[2] : centerH;
-  const P0 = [center[0], center[1] + dist, ph * Math.sin(t)];
+  const P0 = [center[0], center[1] + dist, targetHeight(tilt, ph, ceilH)];
   const up = [0, 0, 1];
   const sRaw = V.sub(up, V.mul(nV, V.dot(up, nV)));
   const s = V.norm(sRaw) > 1e-9 ? V.unit(sRaw) : [0, 1, 0];
-  const r = V.unit(V.cross(s, nV));
+  // guardando in SU la manualita' si inverte: sul soffitto il testo va specchiato
+  // affinche' resti leggibile a chi sta sotto (l'errore "?EM YRRAM" di Bartlett)
+  const r0 = V.unit(V.cross(s, nV));
+  const r = tilt > 90 ? V.mul(r0, -1) : r0;
   return { P0, nV, r, s };
 }
 function intersectPlane(o, dir, P0, n) {
@@ -181,6 +216,9 @@ function compute(st) {
   } else {
     light = { mode: "sun", sun: { elevation_deg: st.sunElev, azimuth_rel_deg: st.sunAzRel } };
   }
+  const SDIV = light.mode === "sun" ? solarDivergence(st.dateLocal) : 0.0093;
+  const SBLUR = slopeBlurRad(st.slopeMrad);
+  const SDIVE = Math.sqrt(SDIV * SDIV + SBLUR * SBLUR);
   // testo → bersagli
   const { pts: t2d, unknown } = rasterize(st.text, st.pitch / 100);
   if (unknown.length) warn.push({ lvl: "warn", msg: `Caratteri non nel font, ignorati: ${unknown.join(" ")}` });
@@ -188,13 +226,13 @@ function compute(st) {
   const spacing = st.mirrorW + st.gap;
   const offsets = st.shape === "hex" ? hexGrid(st.hexR, spacing) : squareGrid(st.cols, st.rows, spacing);
   const m = match(offsets, t2d);
-  if (m.error) { warn.push({ lvl: "err", msg: m.error + (m.need ? ` Ingrandisci la griglia o accorcia il testo.` : "") }); }
+  if (m.error) { warn.push({ lvl: "err", msg: m.error + (m.need ? ` Enlarge the grid or shorten the text.` : "") }); }
   info.nMirrors = offsets.length; info.nPoints = t2d.length;
   if (t2d.length && offsets.length > t2d.length)
     info.dup = `${offsets.length} mirrors on ${t2d.length} dots: ~${(offsets.length / t2d.length).toFixed(1)}× brightness per dot`;
 
   const center = [st.devX || 0, 0, st.devZ];
-  const pf = planeFrame(st.dist, st.planeTilt, center, st.planeH);
+  const pf = planeFrame(st.dist, st.planeTilt, center, st.planeH, st.ceilH);
   const t3d = t2d.map(([a, b]) => V.add(pf.P0, V.add(V.mul(pf.r, st.flipH ? -a : a), V.mul(pf.s, st.flipV ? -b : b))));
 
   const toLight = (mp) => light.mode === "sun"
@@ -213,7 +251,7 @@ function compute(st) {
       const ix = intersectPlane(mp, ray, pf.P0, pf.nV);
       const path = ix ? ix.t : st.dist;
       let spotR;
-      if (light.mode === "sun") spotR = 0.5 * (st.mirrorW / 1000 + 0.0093 * path);
+      if (light.mode === "sun") spotR = 0.5 * (st.mirrorW / 1000 + SDIVE * path);
       else {
         const L = V.norm(V.sub(light.lamp.position_m, mp));
         spotR = 0.5 * ((st.mirrorW / 1000) * (L + path) / L + light.lamp.diameter_m * path / L);
@@ -250,15 +288,15 @@ function compute(st) {
   /* --- messa a fuoco: limite fisico e parametri consigliati --- */
   const meanPath = rows.length ? rows.reduce((s, r) => s + r.path, 0) / rows.length : st.dist;
   if (light.mode === "sun") {
-    info.minSpot = 0.0093 * meanPath;                       // limite divergenza solare (specchio→0)
-    info.wRec = Math.min(60, Math.max(8, 1000 * 0.0093 * meanPath));   // contributo pari specchio/divergenza
+    info.minSpot = SDIVE * meanPath; info.sdiv = SDIV; info.sdivEff = SDIVE;                       // limite divergenza solare (specchio→0)
+    info.wRec = Math.min(60, Math.max(8, 1000 * SDIVE * meanPath));   // contributo pari specchio/divergenza
   } else {
     const L0 = V.norm(V.sub(light.lamp.position_m, center));
     info.minSpot = light.lamp.diameter_m * meanPath / L0;   // limite penombra (specchio→0)
     info.wRec = Math.min(60, Math.max(8, 1000 * light.lamp.diameter_m * meanPath / (L0 + meanPath)));
   }
   const spotRec = light.mode === "sun"
-    ? info.wRec / 1000 + 0.0093 * meanPath
+    ? info.wRec / 1000 + SDIVE * meanPath
     : (() => { const L0 = V.norm(V.sub(light.lamp.position_m, center));
         return (info.wRec / 1000) * (L0 + meanPath) / L0 + light.lamp.diameter_m * meanPath / L0; })();
   info.spotRecBase = spotRec;
@@ -307,6 +345,7 @@ function compute(st) {
     info.textW = Math.max(...txs) - Math.min(...txs) + info.spotD;
     info.textH = Math.max(...tys) - Math.min(...tys) + info.spotD;
   }
+  info.nMirrors = offsets.length;
   info.arraySize = offsets.length
     ? (2 * Math.max(...offsets.map(o => Math.hypot(o[0], o[1]))) + st.mirrorW) / 1000 : 0.25;
   const eye = [0, -st.obsBack, st.obsH];
@@ -361,7 +400,7 @@ function compute(st) {
   // tolleranza: piano spostato a dist·(1+δ)
   let tolHits = null;
   if (st.tol !== 0 && m.assign) {
-    const pf2 = planeFrame(st.dist * (1 + st.tol / 100), st.planeTilt, center, st.planeH);
+    const pf2 = planeFrame(st.dist * (1 + st.tol / 100), st.planeTilt, center, st.planeH, st.ceilH);
     tolHits = rows.map(r => {
       const ix = intersectPlane(r.mp, r.ray, pf2.P0, pf2.nV);
       if (!ix) return null;
@@ -373,14 +412,16 @@ function compute(st) {
 }
 
 /* ---------- UI (tema chiaro "carta e sole") ---------- */
-const C = { bg: "#F5F5F7", panel: "#FFFFFF", line: "#D2D2D7", ink: "#1D1D1F", dim: "#86868B",
-  gold: "#0071E3", goldFill: "#0071E3", steel: "#6E6E73", err: "#FF3B30", ok: "#34C759" };
+const PASTEL = { coral: "#F2A39C", peach: "#F5B2A1", sand: "#EDC7A0", cream: "#EBDEAA",
+  lime: "#C6DA69", mint: "#B2DBB3", sage: "#ADDAC5", aqua: "#AAD9D3", sky: "#A7D9E2", rose: "#EF9394" };
+const C = { bg: "#FBFBFD", panel: "#FFFFFF", line: "#E5E5EA", ink: "#1D1D1F", dim: "#86868B",
+  gold: "#1D1D1F", goldFill: "#1D1D1F", steel: "#6E6E73", err: "#FF3B30", ok: "#248A3D" };
 const S = {
-  label: { fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase", color: C.dim, display: "block", marginBottom: 4 },
-  input: { width: "100%", background: "#FFFFFF", border: `1px solid ${C.line}`, color: C.ink, borderRadius: 6, padding: "7px 9px", fontSize: 13, fontFamily: "'JetBrains Mono', ui-monospace, monospace", boxSizing: "border-box" },
+  label: { fontSize: 12, color: C.dim, display: "block", marginBottom: 4, fontWeight: 500 },
+  input: { width: "100%", background: "#FFFFFF", border: `1px solid ${C.line}`, color: C.ink, borderRadius: 6, padding: "7px 9px", fontSize: 13, fontFamily: "'SF Mono', ui-monospace, Menlo, monospace", boxSizing: "border-box" },
   row: { display: "flex", gap: 10, marginBottom: 10 },
   group: { background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14, marginBottom: 14 },
-  gtitle: { fontFamily: "'Fraunces', Georgia, serif", fontSize: 15, color: C.gold, margin: "0 0 12px", fontWeight: 600 },
+  gtitle: { fontSize: 17, color: C.ink, margin: "0 0 12px", fontWeight: 600, letterSpacing: "-0.01em" },
 };
 
 function Num({ label, value, set, min, max, step = 1, unit }) {
@@ -423,12 +464,13 @@ const OPT_BOUNDS = { dist: [0.5, 30], devZ: [0.2, 3], planeH: [0.2, 4], lampY: [
 function sceneEval2(st, ov, sun, I) {
   const center = [ov.devX ?? (st.devX || 0), 0, ov.devZ];
   const t = st.planeTilt * D2R;
-  const P0 = [0, ov.dist, ov.planeH * Math.sin(t)];
+  const P0 = [0, ov.dist, targetHeight(st.planeTilt, ov.planeH, ov.ceilH ?? st.ceilH)];
   const nV = [0, -Math.sin(t), Math.cos(t)];
   const upv = [0, 0, 1];
   const sRaw = V.sub(upv, V.mul(nV, V.dot(upv, nV)));
   const sv = V.norm(sRaw) > 1e-9 ? V.unit(sRaw) : [0, 1, 0];
-  const rv = V.unit(V.cross(sv, nV));
+  const rv0 = V.unit(V.cross(sv, nV));
+  const rv = st.planeTilt > 90 ? V.mul(rv0, -1) : rv0;
   const w2 = ((I && I.textW) || 0.5) / 2, h2 = ((I && I.textH) || 0.35) / 2;
   const pts = [P0, V.add(P0, V.mul(rv, w2)), V.sub(P0, V.mul(rv, w2)),
                V.add(P0, V.mul(sv, h2)), V.sub(P0, V.mul(sv, h2))];
@@ -436,7 +478,7 @@ function sceneEval2(st, ov, sun, I) {
   let v, E, L0 = 1;
   if (sun) {
     v = sunDirection(sun.elev, sun.azRel);
-    E = 100000 * Math.pow(Math.max(0.01, Math.sin(sun.elev * D2R)), 0.7);
+    E = sunDirectLux(sun.elev);
   } else {
     const lp = [st.lampX, ov.lampY, ov.lampZ];
     L0 = V.norm(V.sub(lp, center));
@@ -447,8 +489,10 @@ function sceneEval2(st, ov, sun, I) {
   for (const tp of pts) {
     const rDir = V.unit(V.sub(tp, center));
     const path = V.norm(V.sub(tp, center));
-    const beam = sun ? w + 0.0093 * path
-                     : w * (L0 + path) / L0 + (st.lampD / 100) * path / L0;
+    const blur = slopeBlurRad(st.slopeMrad) * path;
+    const beam0 = sun ? w + (I.sdiv || 0.0093) * path
+                      : w * (L0 + path) / L0 + (st.lampD / 100) * path / L0;
+    const beam = Math.sqrt(beam0 * beam0 + blur * blur);
     const elong = 1 / Math.max(0.15, Math.abs(V.dot(rDir, nV)));
     const n = V.unit(V.add(v, rDir));
     sInc += Math.acos(Math.max(-1, Math.min(1, V.dot(v, n)))) * R2D;
@@ -463,11 +507,12 @@ function sceneEval2(st, ov, sun, I) {
 function viewOccluded(st, I, ov) {
   const t = st.planeTilt * D2R;
   const nV = [0, -Math.sin(t), Math.cos(t)];
-  const P0 = [0, ov.dist, ov.planeH * Math.sin(t)];
+  const P0 = [0, ov.dist, targetHeight(st.planeTilt, ov.planeH, ov.ceilH ?? st.ceilH)];
   const up = [0, 0, 1];
   const sRaw = V.sub(up, V.mul(nV, V.dot(up, nV)));
   const sv = V.norm(sRaw) > 1e-9 ? V.unit(sRaw) : [0, 1, 0];
-  const rv = V.unit(V.cross(sv, nV));
+  const rv0 = V.unit(V.cross(sv, nV));
+  const rv = st.planeTilt > 90 ? V.mul(rv0, -1) : rv0;
   const g = (I.devTilt ?? 0) * D2R;
   const Zd = [0, Math.sin(g), Math.cos(g)];
   const aC = [ov.devX ?? (st.devX || 0), 0, ov.devZ], aR = (I.arraySize || 0.3) / 2 + 0.02;
@@ -488,7 +533,7 @@ function optimizeScene(st, I, opts = null) {
   const cl = (x, [a, b]) => Math.max(a, Math.min(b, x));
   const base = { dist: st.dist, devZ: st.devZ, devX: st.devX || 0, planeH: st.planeH,
                  obsBack: st.obsBack, obsH: st.obsH, lampY: st.lampY, lampZ: st.lampZ, dDay: 0, dMin: 0 };
-  const BOUNDS = { ...OPT_BOUNDS, obsBack: [0, 20], obsH: [0.8, 2.2], devX: [-3, 3] };
+  const BOUNDS = { ...OPT_BOUNDS, obsBack: [0, 20], obsH: [0.4, 2.2], devX: [-3, 3], ceilH: [1.8, 6] };
   const timeable = st.lightMode === "sunAuto";
   const baseUtc = timeable ? new Date(st.dateLocal + ":00").getTime() - st.tzOffset * 3600000 : 0;
   const sunAt = (dDay, dMin) => {
@@ -498,7 +543,8 @@ function optimizeScene(st, I, opts = null) {
   };
   const frees = opts && opts.frees ? opts.frees.slice() : Object.keys(st.optOn).filter(k => st.optOn[k]
     && (isLamp || (k !== "lampY" && k !== "lampZ"))
-    && (st.planeTilt > 5 || k !== "planeH")
+    && ((st.planeTilt > 5 && st.planeTilt <= 90) || k !== "planeH")
+    && (st.planeTilt > 90 || k !== "ceilH")
     && (timeable || (k !== "day" && k !== "hour")));
   const wide = !!(opts && opts.wide);
   const sun0 = sunAt(0, 0);
@@ -586,8 +632,18 @@ function SceneViews({ st, I, patch }) {
   const elev = I.elevUsed ?? 30, azRel = I.azRelUsed ?? 0;
   const tR = st.planeTilt * D2R, gR = (I.devTilt ?? 0) * D2R;
   const half = (I.arraySize || 0.25) / 2;
-  const lbl = (x, y, s, col = C.dim, anchor = "middle", size = 9) =>
-    <text x={x} y={y} fill={col} fontSize={size} textAnchor={anchor} fontFamily="monospace">{s}</text>;
+  // etichette sempre dentro il riquadro: y clampata, ancoraggio spostato ai bordi
+  const lbl = (x, y, s, col = C.dim, anchor = "middle", size = 9) => {
+    const txt = String(s), w = txt.length * size * 0.6;
+    let a = anchor, xx = x;
+    const half = a === "middle" ? w / 2 : 0;
+    if (a === "middle" && x - w / 2 < 3) { a = "start"; xx = 3; }
+    else if (a === "middle" && x + w / 2 > W - 3) { a = "end"; xx = W - 3; }
+    else if (a === "start" && x + w > W - 3) { a = "end"; xx = W - 3; }
+    else if (a === "end" && x - w < 3) { a = "start"; xx = 3; }
+    const yy = Math.max(size + 1, Math.min(H - 3, y));
+    return <text x={xx} y={yy} fill={col} fontSize={size} textAnchor={a} fontFamily="monospace">{txt}</text>;
+  };
   const dash = (a, b, col = "#9A9484") =>
     <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={col} strokeDasharray="4 3" />;
   const AL = I.al || {};
@@ -599,6 +655,11 @@ function SceneViews({ st, I, patch }) {
     </g>);
   };
   const stack = (list) => list.filter(Boolean).map((a, i) => badge(i, a.t, a.c));
+  // zona occupata dalla pila di avvisi in alto a sinistra (per non nasconderci etichette sotto)
+  const nWarnTop = [(AL.graze || AL.wide), AL.overlap, AL.far].filter(Boolean).length;
+  const nWarnSide = [AL.backlit, AL.occ, AL.shadow, (AL.graze || AL.wide), AL.overlap].filter(Boolean).length;
+  const bzY = (n) => n ? 6 + n * 20 + 6 : 0;
+  const clearOf = (x, y, n) => (x < 200 && y < bzY(n)) ? bzY(n) + 10 : y;
 
   /* vista dall'alto, frame stanza: scritta ferma, array mobile. u = avanti (y), v = laterale (x) */
   const RD = st.dist;
@@ -625,18 +686,28 @@ function SceneViews({ st, I, patch }) {
   const tLamp = isLamp ? T.px(st.lampY - RD, st.lampX) : null;
 
   /* vista laterale: u = avanti (y), v = altezza (z) */
-  const P0s = [st.dist, st.planeH * Math.sin(tR)];
+  const P0s = [st.dist, targetHeight(st.planeTilt, st.planeH, st.ceilH)];
   const dirP = [Math.cos(tR), Math.sin(tR)];
   const plA = [P0s[0] - dirP[0] * textH / 2, P0s[1] - dirP[1] * textH / 2];
   const plB = [P0s[0] + dirP[0] * textH / 2, P0s[1] + dirP[1] * textH / 2];
   // superficie estesa (pavimento/parete): dal piede fino oltre la scritta
   const surfLen = textH / 2 + 0.6;
-  const sf = st.planeTilt > 3
-    ? [P0s[0] - dirP[0] * Math.min(surfLen, P0s[1] / Math.max(1e-6, dirP[1])), Math.max(0, P0s[1] - dirP[1] * surfLen)]
-    : [P0s[0] - surfLen, 0];
-  const sg = [P0s[0] + dirP[0] * surfLen, P0s[1] + dirP[1] * surfLen];
+  let sf, sg;
+  if (st.planeTilt > 90) {                      // soffitto (piano o inclinato): copre anche l'array
+    const back = dirP[0] < -0.05
+      ? Math.min(14, Math.max(surfLen, (-RD - 0.4 - P0s[0]) / dirP[0])) : surfLen;
+    sf = [P0s[0] - dirP[0] * surfLen, P0s[1] - dirP[1] * surfLen];
+    sg = [P0s[0] + dirP[0] * back, P0s[1] + dirP[1] * back];
+  } else if (st.planeTilt > 3) {                // parete
+    sf = [P0s[0] - dirP[0] * Math.min(surfLen, P0s[1] / Math.max(1e-6, dirP[1])), Math.max(0, P0s[1] - dirP[1] * surfLen)];
+    sg = [P0s[0] + dirP[0] * surfLen, P0s[1] + dirP[1] * surfLen];
+  } else {                                      // pavimento
+    sf = [P0s[0] - surfLen, 0];
+    sg = [P0s[0] + dirP[0] * surfLen, P0s[1] + dirP[1] * surfLen];
+  }
   const hnd = [P0s[0] + dirP[0] * (surfLen + 0.15), P0s[1] + dirP[1] * (surfLen + 0.15)];
-  const surfName = st.planeTilt <= 5 ? "floor" : st.planeTilt >= 85 ? "wall" : `plane ${st.planeTilt}°`;
+  const surfName = st.planeTilt <= 5 ? "floor" : st.planeTilt >= 175 ? "ceiling"
+    : st.planeTilt > 95 ? `sloped ceiling ${st.planeTilt}°` : st.planeTilt >= 85 ? "wall" : `plane ${st.planeTilt}°`;
   const sidePts = [[-st.obsBack - RD, 0], [-st.obsBack - RD, st.obsH], [-RD, st.devZ],
     [plA[0] - RD, plA[1]], [plB[0] - RD, plB[1]], [sf[0] - RD, sf[1]], [sg[0] - RD, sg[1]], [hnd[0] - RD, hnd[1]], [0, 0]];
   if (isLamp) sidePts.push([st.lampY - RD, st.lampZ]);
@@ -711,7 +782,7 @@ function SceneViews({ st, I, patch }) {
     else if (drag.current === "obsS") patch({ obsBack: rnd(clamp(-u, 0, 20)), obsH: rnd(clamp(v, 0.5, 2.2), 0.05) });
     else if (drag.current === "planeS") {
       const p = { dist: rnd(clamp(u, 0.5, 30)) };
-      if (st.planeTilt > 5) p.planeH = rnd(clamp(v / Math.sin(tR), 0.2, 4), 0.05);
+      if (st.planeTilt > 5 && st.planeTilt <= 90) p.planeH = rnd(clamp(v / Math.sin(tR), 0.2, 4), 0.05);
       patch(p);
     }
     else if (drag.current === "tiltS") {
@@ -759,11 +830,11 @@ function SceneViews({ st, I, patch }) {
       <svg viewBox={`0 0 ${W} ${H}`} style={svgStyle} role="img" aria-label="Vista dall'alto"
         onPointerMove={moveTop} onPointerUp={endDrag} onPointerLeave={endDrag}>
         {lbl(W - 10, 14, "TOP VIEW", "#BDB49E", "end")}
-        {isLamp ? <>{dash(tLamp, tArr)}<circle cx={tLamp[0]} cy={tLamp[1]} r="6" fill={C.goldFill} stroke={C.gold} />
+        {isLamp ? <>{dash(tLamp, tArr)}<circle cx={tLamp[0]} cy={tLamp[1]} r="6" fill="#FFD60A" stroke="#E8A93C" strokeWidth="1.5" />
           {lbl(tLamp[0], tLamp[1] - 10, `spotlight (${st.lampX}; ${st.lampY} m)`, C.gold)}
           <circle cx={tLamp[0]} cy={tLamp[1]} r="15" fill="transparent" {...grab("lampT")} /></>
-          : <>{dash(sTip, tArr, "#F5A623")}<circle cx={sTip[0]} cy={sTip[1]} r="8" fill="none" stroke={C.goldFill} strokeWidth="2" />
-          {lbl(sTip[0], sTip[1] + 3, "☀", C.gold, "middle", 10)}{lbl(sTip[0], sTip[1] - 12, `sole az.rel ${azRel.toFixed(0)}°`, C.gold)}
+          : <>{dash(sTip, tArr, "#E8A93C")}<circle cx={sTip[0]} cy={sTip[1]} r="8" fill="#FFD60A" stroke="#E8A93C" strokeWidth="2" />
+          {lbl(sTip[0], clearOf(sTip[0] - 40, sTip[1] - 12, nWarnTop), `sun az.rel ${azRel.toFixed(0)}\u00b0`, "#C7861A")}
           <circle cx={sTip[0]} cy={sTip[1]} r="16" fill="transparent" {...grab("sunT")} /></>}
         {dash(tArr, tTc)}
         {(() => { const aw = Math.max(6, 2 * half * T.sc); return <>
@@ -775,10 +846,10 @@ function SceneViews({ st, I, patch }) {
             const svg = e.currentTarget.ownerSVGElement, r = svg.getBoundingClientRect();
             lastPt.current = { X: (e.clientX - r.left) * W / Math.max(1, r.width), Y: (e.clientY - r.top) * H / Math.max(1, r.height), dist0: st.dist, lampX0: st.lampX, lampY0: st.lampY, obs0: st.obsBack, sc: T.sc }; }} />
         <circle cx={tObs[0]} cy={tObs[1]} r="4" fill="#6E6758" />
-        {lbl(tObs[0], tObs[1] - 8, `viewer (−${st.obsBack} m)`, "#6E6758")}
+        {lbl(tObs[0], clearOf(tObs[0] - 40, tObs[1] - 16, nWarnTop), `viewer (−${st.obsBack} m)`, "#6E6758")}
         <circle cx={tObs[0]} cy={tObs[1]} r="13" fill="transparent" {...grab("obsT")} />
         <line x1={tT1[0]} y1={tT1[1]} x2={tT2[0]} y2={tT2[1]} stroke={C.ink} strokeWidth="3" />
-        {lbl(tTc[0], tT1[1] + 14, `text at ${st.dist} m on ${st.planeTilt <= 5 ? "floor" : st.planeTilt >= 85 ? "wall" : `plane ${st.planeTilt}°`} · width ${textW.toFixed(2)} m`, C.ink)}
+        {lbl(tTc[0], tT1[1] + 14, `text at ${st.dist} m on ${surfName} · width ${textW.toFixed(2)} m`, C.ink)}
         <line x1={tT1[0]} y1={tT1[1]} x2={tT2[0]} y2={tT2[1]} stroke="transparent" strokeWidth="20" {...grab("text")} />
         {stack([
           (AL.graze || AL.wide) && { t: AL.graze ? `⚠ grazing light: −${I.lightLossPct}% light` : `⚠ wide angles: −${I.lightLossPct}% light`, c: AL.graze ? C.err : "#C98A0F" },
@@ -789,26 +860,34 @@ function SceneViews({ st, I, patch }) {
       <svg viewBox={`0 0 ${W} ${H}`} style={svgStyle} role="img" aria-label="Vista laterale"
         onPointerMove={moveSide} onPointerUp={endDrag} onPointerLeave={endDrag}>
         {lbl(W - 10, 14, "SIDE VIEW", "#BDB49E", "end")}
-        <line x1={sFloor0[0]} y1={sFloor0[1]} x2={sFloor1[0]} y2={sFloor1[1]} stroke="#C9BFA8" />
-        {isLamp ? <>{dash(sLamp, sArrC)}<circle cx={sLamp[0]} cy={sLamp[1]} r="6" fill={C.goldFill} stroke={C.gold} />
+        <line x1={sFloor0[0]} y1={sFloor0[1]} x2={sFloor1[0]} y2={sFloor1[1]} stroke="#E4C89B" />
+        {isLamp ? <>{dash(sLamp, sArrC)}<circle cx={sLamp[0]} cy={sLamp[1]} r="6" fill="#FFD60A" stroke="#E8A93C" strokeWidth="1.5" />
           {lbl(sLamp[0], sLamp[1] - 10, `spotlight h ${st.lampZ} m`, C.gold)}
           <circle cx={sLamp[0]} cy={sLamp[1]} r="15" fill="transparent" {...grab("lampS")} /></>
-          : <>{dash(sSunTip, sArrC, "#F5A623")}<circle cx={sSunTip[0]} cy={sSunTip[1]} r="8" fill="none" stroke={C.goldFill} strokeWidth="2" />
-          {lbl(sSunTip[0], sSunTip[1] + 3, "☀", C.gold, "middle", 10)}{lbl(sSunTip[0], sSunTip[1] - 12, `elev ${elev.toFixed(0)}° · ${Math.abs(azRel) > 135 ? "in front" : Math.abs(azRel) > 45 ? "TO THE SIDE" : "behind"}`, C.gold)}
+          : <>{dash(sSunTip, sArrC, "#E8A93C")}<circle cx={sSunTip[0]} cy={sSunTip[1]} r="8" fill="#FFD60A" stroke="#E8A93C" strokeWidth="2" />
+          {lbl(sSunTip[0], clearOf(sSunTip[0] - 40, sSunTip[1] - 12, nWarnSide), `elev ${elev.toFixed(0)}° · ${Math.abs(azRel) > 135 ? "in front" : Math.abs(azRel) > 45 ? "TO THE SIDE" : "behind"}`, "#C7861A")}
           <circle cx={sSunTip[0]} cy={sSunTip[1]} r="16" fill="transparent" {...grab("sunS")} /></>}
         {dash(sArrC, sP0)}
         {(() => { const fpx = [Math.sin(gR), -Math.cos(gR)];   // normale "fronte" in pixel
           const o = 4.5, f1 = [sArr1[0] + fpx[0] * o, sArr1[1] + fpx[1] * o], f2 = [sArr2[0] + fpx[0] * o, sArr2[1] + fpx[1] * o];
           return (<>
             <line x1={sArr1[0]} y1={sArr1[1]} x2={sArr2[0]} y2={sArr2[1]} stroke={I.backlit ? C.err : "#5B6670"} strokeWidth="6" strokeLinecap="round" />
-            <line x1={f1[0]} y1={f1[1]} x2={f2[0]} y2={f2[1]} stroke={C.goldFill} strokeWidth="3" strokeLinecap="round" />
-            {lbl(f2[0] + fpx[0] * 10, f2[1] + fpx[1] * 10, "mirrors", C.gold)}
+            <line x1={f1[0]} y1={f1[1]} x2={f2[0]} y2={f2[1]} stroke="#5FB8CE" strokeWidth="3.5" strokeLinecap="round" />
+            {lbl(f2[0] + fpx[0] * 17, Math.max(f2[1] + fpx[1] * 17 + 4, Math.min(sArr1[1], sArr2[1]) + 14), "mirrors", "#3E93AA")}
           </>); })()}
-        {lbl(sArrC[0] - 10, Math.min(sArr1[1], sArr2[1]) - 10, `array ${(2 * half).toFixed(2)} m · h ${st.devZ} m · tilt ${(I.devTilt ?? 0).toFixed(0)}°`, I.backlit ? C.err : C.steel, "end")}
+        {lbl(sArrC[0] - 10, Math.min(sArr1[1], sArr2[1]) - 17, `array ${(2 * half).toFixed(2)} m · h ${st.devZ} m · tilt ${(I.devTilt ?? 0).toFixed(0)}°`, I.backlit ? C.err : C.steel, "end")}
         <line x1={sArr1[0]} y1={sArr1[1]} x2={sArr2[0]} y2={sArr2[1]} stroke="transparent" strokeWidth="18" {...grab("array")} />
                 <line x1={sObsF[0]} y1={sObsF[1]} x2={sObsH[0]} y2={sObsH[1]} stroke="#6E6758" strokeWidth="2" />
-        <circle cx={sObsH[0]} cy={sObsH[1] - 4} r="4" fill="#6E6758" />
-        {dash(sObsH, sP0, I.occFrac > 0 ? C.err : "#BFB49B")}
+        {(() => { const ex = sObsH[0], ey = sObsH[1] - 5, ew = 9, eh = 5.5;
+          return (<g>
+            <path d={`M ${ex - ew} ${ey} Q ${ex} ${ey - eh * 1.7} ${ex + ew} ${ey} Q ${ex} ${ey + eh * 1.7} ${ex - ew} ${ey} Z`}
+              fill="#FFFFFF" stroke={C.ink} strokeWidth="1.4" />
+            <circle cx={ex + 1.5} cy={ey} r="3.1" fill="#8EB6D8" />
+            <circle cx={ex + 1.5} cy={ey} r="1.5" fill={C.ink} />
+            {[-0.65, -0.25, 0.15].map((t, i) => { const bx = ex + t * ew, by = ey - eh * 1.35 * (1 - t * t);
+              return <line key={i} x1={bx} y1={by} x2={bx - 2.2} y2={by - 4.5} stroke={C.ink} strokeWidth="1.2" strokeLinecap="round" />; })}
+          </g>); })()}
+        {dash([sObsH[0], sObsH[1] - 5], sP0, I.occFrac > 0 ? C.err : "#B9B9BF")}
         {lbl(sObsF[0], sObsF[1] + 12, `eyes ${st.obsH} m`, "#6E6758")}
         <line x1={sObsF[0]} y1={sObsF[1]} x2={sObsH[0]} y2={sObsH[1] - 10} stroke="transparent" strokeWidth="18" {...grab("obsS")} />
         <line x1={sPlA[0]} y1={sPlA[1]} x2={sPlB[0]} y2={sPlB[1]} stroke={C.ink} strokeWidth="3" />
@@ -831,13 +910,13 @@ function SceneViews({ st, I, patch }) {
 /* ================= Overview & Guide pages ================= */
 const P = {
   wrap: { maxWidth: 780, margin: "0 auto" },
-  hero: { fontFamily: "'Fraunces', Georgia, serif", fontSize: 40, lineHeight: 1.15, margin: "26px 0 10px", letterSpacing: "-0.5px" },
+  hero: { fontSize: 46, fontWeight: 600, lineHeight: 1.1, margin: "30px 0 12px", letterSpacing: "-0.015em" },
   lead: { fontSize: 17, lineHeight: 1.6, color: "#3A3A3C", margin: "0 0 18px" },
-  h2: { fontFamily: "'Fraunces', Georgia, serif", fontSize: 22, margin: "30px 0 8px" },
+  h2: { fontSize: 21, fontWeight: 600, margin: "30px 0 8px", letterSpacing: "-0.01em" },
   p: { fontSize: 14.5, lineHeight: 1.65, color: "#3A3A3C", margin: "0 0 12px" },
   card: { background: "#FFFFFF", border: "1px solid #D2D2D7", borderRadius: 14, padding: "18px 20px", margin: "14px 0" },
   kbd: { fontFamily: "'SF Mono', ui-monospace, Menlo, monospace", fontSize: 13, background: "#F5F5F7", border: "1px solid #D2D2D7", borderRadius: 6, padding: "1px 6px" },
-  a: { color: "#0071E3", textDecoration: "none" },
+  a: { color: "#1D1D1F", textDecoration: "underline", textUnderlineOffset: 3 },
 };
 
 function HomePage({ go }) {
@@ -900,7 +979,7 @@ function HomePage({ go }) {
       </p>
 
       <div style={{ margin: "26px 0 34px" }}>
-        <button onClick={go} style={{ background: "#0071E3", color: "#FFFFFF", border: "none", borderRadius: 980, padding: "13px 26px", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
+        <button onClick={go} style={{ background: "#1D1D1F", color: "#FFFFFF", border: "none", borderRadius: 980, padding: "13px 26px", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
           Open the Designer →</button>
         <a href="https://github.com/bencbartlett/3D-printed-mirror-array" target="_blank" rel="noreferrer"
           style={{ ...P.a, marginLeft: 16, fontSize: 14 }}>Original project on GitHub</a>
@@ -1106,12 +1185,22 @@ function buildPrintFiles(st, res, bedW, bedH) {
   let xmin = 1e9, ymin = 1e9, xmax = -1e9, ymax = -1e9;
   for (const r of rows) { xmin = Math.min(xmin, r.a - half); ymin = Math.min(ymin, r.b - half);
                           xmax = Math.max(xmax, r.a + half); ymax = Math.max(ymax, r.b + half); }
-  const nx = Math.max(1, Math.ceil((xmax - xmin) / bedW));
-  const ny = Math.max(1, Math.ceil((ymax - ymin) / bedH));
+  // ogni pilastro sporge footprint/2 oltre il proprio centro: la cella utile
+  // per i CENTRI deve essere (piatto - footprint), o la tessera eccede il piatto
+  // l'esagono (piatto-su-piatto lungo x) e' 2/sqrt(3) piu' largo sulle punte
+  const fpx = footprint, fpy = shape === "hex" ? footprint * 2 / Math.sqrt(3) : footprint;
+  if (bedW <= fpx || bedH <= fpy)
+    throw new Error(`Print bed ${bedW}\u00d7${bedH} mm is too small: one pillar takes ${fpx.toFixed(1)}\u00d7${fpy.toFixed(1)} mm.`);
+  const ux = bedW - fpx, uy = bedH - fpy;
+  let cx0 = 1e9, cy0 = 1e9, cx1 = -1e9, cy1 = -1e9;
+  for (const r of rows) { cx0 = Math.min(cx0, r.a); cx1 = Math.max(cx1, r.a);
+                          cy0 = Math.min(cy0, r.b); cy1 = Math.max(cy1, r.b); }
+  const nx = Math.max(1, Math.ceil((cx1 - cx0) / ux));
+  const ny = Math.max(1, Math.ceil((cy1 - cy0) / uy));
   const tiles = new Map();
   for (const r of rows) {
-    const tx = Math.min(nx - 1, Math.floor((r.a - xmin) / bedW));
-    const ty = Math.min(ny - 1, Math.floor((r.b - ymin) / bedH));
+    const tx = Math.min(nx - 1, Math.max(0, Math.floor((r.a - cx0) / ux)));
+    const ty = Math.min(ny - 1, Math.max(0, Math.floor((r.b - cy0) / uy)));
     const k = tx + "_" + ty;
     if (!tiles.has(k)) tiles.set(k, []);
     tiles.get(k).push(r);
@@ -1131,7 +1220,7 @@ function buildPrintFiles(st, res, bedW, bedH) {
 
 
 function mirrorMapSVG(rows, tileInfo, mirrorW, shape) {
-  const cols = ["#0071E3", "#34C759", "#FF9500", "#AF52DE", "#FF3B30", "#5AC8FA", "#FFCC00", "#8E8E93"];
+  const cols = ["#1D1D1F", "#34C759", "#FF9500", "#AF52DE", "#FF3B30", "#5AC8FA", "#FFCC00", "#8E8E93"];
   const tileOf = {}; tileInfo.forEach((t, ti) => t.idx.forEach(i => tileOf[i] = ti));
   let xmin = 1e9, ymin = 1e9, xmax = -1e9, ymax = -1e9;
   for (const r of rows) { xmin = Math.min(xmin, r.a); xmax = Math.max(xmax, r.a); ymin = Math.min(ymin, r.b); ymax = Math.max(ymax, r.b); }
@@ -1151,18 +1240,18 @@ function mirrorMapSVG(rows, tileInfo, mirrorW, shape) {
 }
 function assemblyGuideHTML(st, res, pf, cfg) {
   const I = res.info, sun = st.lightMode !== "lamp";
-  const surf = st.planeTilt <= 5 ? "floor" : st.planeTilt >= 85 ? "wall" : `surface tilted ${st.planeTilt}\u00b0`;
+  const surf = st.planeTilt <= 5 ? "floor" : st.planeTilt >= 175 ? "ceiling" : st.planeTilt > 95 ? `sloped ceiling (${st.planeTilt}\u00b0)` : st.planeTilt >= 85 ? "wall" : `surface tilted ${st.planeTilt}\u00b0`;
   const map = mirrorMapSVG(res.rows, pf.tileInfo, st.mirrorW, st.shape);
   const tileRows = pf.tileInfo.map(t =>
     `<tr><td><code>array_tile_${t.key}.stl</code></td><td>${t.pillars}</td><td>${t.tris}</td><td>mirrors ${t.idx[0]}\u2026${t.idx[t.idx.length - 1]}</td></tr>`).join("");
-  const cols = ["#0071E3", "#34C759", "#FF9500", "#AF52DE", "#FF3B30", "#5AC8FA", "#FFCC00", "#8E8E93"];
+  const cols = ["#1D1D1F", "#34C759", "#FF9500", "#AF52DE", "#FF3B30", "#5AC8FA", "#FFCC00", "#8E8E93"];
   const legend = pf.tileInfo.map((t, ti) =>
     `<span style="display:inline-block;margin-right:14px"><span style="display:inline-block;width:11px;height:11px;background:${cols[ti % cols.length]};border-radius:3px;margin-right:5px"></span>tile ${t.key}</span>`).join("");
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Heliograph \u2014 Assembly guide</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;max-width:820px;margin:30px auto;padding:0 18px;color:#1D1D1F;line-height:1.6}
 h1{font-size:30px}h2{font-size:20px;margin-top:28px}table{border-collapse:collapse;width:100%;font-size:14px}
 td,th{border-top:1px solid #E8E8ED;padding:7px 10px;text-align:left}code{background:#F5F5F7;border:1px solid #D2D2D7;border-radius:5px;padding:1px 5px;font-size:13px}
-.step{background:#fff;border:1px solid #D2D2D7;border-radius:12px;padding:14px 18px;margin:12px 0}.n{display:inline-block;background:#0071E3;color:#fff;border-radius:99px;width:24px;height:24px;text-align:center;line-height:24px;font-weight:700;margin-right:8px}
+.step{background:#fff;border:1px solid #D2D2D7;border-radius:12px;padding:14px 18px;margin:12px 0}.n{display:inline-block;background:#1D1D1F;color:#fff;border-radius:99px;width:24px;height:24px;text-align:center;line-height:24px;font-weight:700;margin-right:8px}
 .warn{background:#FFF4E5;border:1px solid #F5C27A;border-radius:10px;padding:10px 14px;font-size:14px}</style></head><body>
 <h1>Assembly guide</h1>
 <p><b>Design:</b> \u201C${st.text.replace(/</g, "&lt;")}\u201D \u00b7 ${res.rows.length} mirrors (${st.shape}, ${st.mirrorW} mm) \u00b7 array ${(I.arraySize || 0).toFixed(2)} m wide
@@ -1172,7 +1261,8 @@ td,th{border-top:1px solid #E8E8ED;padding:7px 10px;text-align:left}code{backgro
 <p>Print exactly as exported: base on the bed, scale 100%, no supports. 0.2 mm layers for the body, <b>0.10\u20130.12 mm for the last 3 mm</b> (the slanted tops are the mirror angles). Use a brim; a lifted corner bends every pillar above it. PLA indoors, PETG if the array will sit in the sun.</p></div>
 <div class="step"><span class="n">2</span><b>Join the tiles</b> \u2014 dry-fit on a flat surface, lightly sand mating edges if needed, then glue tile bases together (thin cyanoacrylate or epoxy on the base only \u2014 never touch the pillar tops). The seams pass only through the base, so alignment is forgiving; keep everything flat until cured.</div>
 <div class="step"><span class="n">3</span><b>Mount the mirrors</b> \u2014 follow the numbered map below (colors = tiles). Each pillar has two aligner tabs that seat the mirror corner. Use a glue that <b>does not expand</b> while curing: a very thin coat of cyanoacrylate (work with a fan blowing across, mount right-to-left so vapors drift away from finished mirrors) or tiny dots of E6000 / neutral-cure silicone.<br><br>${legend}<br><br>${map}</div>
-<div class="step"><span class="n">4</span><b>Aim it</b> \u2014 place the array ${st.devZ} m above the ${st.planeTilt >= 85 ? "floor" : "ground"}${(st.devX || 0) !== 0 ? `, ${Math.abs(st.devX)} m to the ${st.devX > 0 ? "right" : "left"}` : ""}, facing the target ${st.dist} m away${sun ? `, with the projection azimuth at ${st.projAz}\u00b0 from north` : ""}. Array tilt: ${(I.devTilt ?? 0).toFixed(0)}\u00b0${st.devTiltAuto ? " (auto)" : ""}. ${sun ? `The message appears around ${st.dateLocal.slice(11)} local time \u2014 small aiming errors are fixed by rotating the whole panel until the text locks on.` : "Switch the lamp on and rotate the panel slightly until the text locks on."}</div>
+<div class="step"><span class="n">4</span><b>Aim it</b> \u2014 place the array ${st.devZ} m above the floor${(st.devX || 0) !== 0 ? `, ${Math.abs(st.devX)} m to the ${st.devX > 0 ? "right" : "left"}` : ""}, facing the target ${st.dist} m away${sun ? `, with the projection azimuth at ${st.projAz}\u00b0 from north` : ""}. Array tilt: ${(I.devTilt ?? 0).toFixed(0)}\u00b0${st.devTiltAuto ? " (auto)" : ""}. ${sun ? `The message appears around ${st.dateLocal.slice(11)} local time \u2014 small aiming errors are fixed by rotating the whole panel until the text locks on.` : "Switch the lamp on and rotate the panel slightly until the text locks on."}</div>
+${st.planeTilt > 90 ? `<div class="step" style="border-color:#A7D9E2"><b>Overhead projection</b> \u2014 the text is already mirrored so it reads correctly to someone lying below and looking up (get this wrong and you get Bartlett\u2019s famous \u201C?EM YRRAM\u201D). Ceiling height used: ${st.ceilH} m. Keep the array low and close to directly under the text: the more vertical the beam, the rounder the spots.</div>` : ""}
 <div class="warn">\u26A0 The array concentrates ${res.rows.length} reflections. Never look at the sun in the mirrors, and avoid pointing the projection at anyone's eyes at short distance.</div>
 <p style="color:#86868B;font-size:13px">Generated by Heliograph Studio \u00b7 based on Ben Bartlett\u2019s \u201C3D printed mirror array\u201D. The bundled <code>config.json</code> can be re-verified anytime with the companion Python tool.</p>
 </body></html>`;
@@ -1187,9 +1277,9 @@ function buildConfig(st, res) {
       light: st.lightMode === "lamp"
         ? { mode: "lamp", lamp: { position_m: [st.lampX, st.lampY, st.lampZ], diameter_m: st.lampD / 100, lumens: st.lampLm, beam_deg: st.lampBeam } }
         : { mode: "sun", sun },
-      photometry: { ambient_lux: st.ambient, mirror_reflectivity: st.reflect ?? 0.9 },
+      photometry: { ambient_lux: st.ambient, mirror_reflectivity: st.reflect ?? 0.9, slope_error_mrad: st.slopeMrad ?? 1.0 },
       observer: { behind_m: st.obsBack, eye_height_m: st.obsH },
-      plane: { distance_m: st.dist, tilt_deg: st.planeTilt, center_height_m: st.planeH },
+      plane: { distance_m: st.dist, tilt_deg: st.planeTilt, center_height_m: st.planeH, ceiling_height_m: st.ceilH },
       device: { center_m: [st.devX || 0, 0, st.devZ], tilt_deg: st.devTiltAuto ? "auto" : st.devTilt,
         mirror_shape: st.shape, mirror_width_mm: st.mirrorW, gap_mm: st.gap,
         grid: st.shape === "hex" ? { type: "hex", radius: st.hexR } : { type: "square", cols: st.cols, rows: st.rows } },
@@ -1203,15 +1293,15 @@ function buildConfig(st, res) {
 export default function EliografoStudio() {
   const [st, setSt] = useState({
     lightMode: "sunAuto", sunElev: 30, sunAzRel: 180,
-    dateLocal: "2026-08-15T19:30", tzOffset: 2, lat: 43.93, lon: 10.92, projAz: 285,
+    dateLocal: nowLocalISO(), tzOffset: -new Date().getTimezoneOffset() / 60, lat: 43.93, lon: 10.92, projAz: 285,
     lampX: 0, lampY: -3, lampZ: 2.5, lampD: 8,
-    dist: 5, planeTilt: 0, devZ: 1.2, devX: 0, reflect: 0.9, bedW: 220, bedH: 220, devTiltAuto: true, devTilt: 0,
+    dist: 5, planeTilt: 0, ceilH: 2.7, devZ: 1.2, devX: 0, reflect: 0.9, slopeMrad: 1.0, bedW: 220, bedH: 220, devTiltAuto: true, devTilt: 0,
     shape: "hex", mirrorW: 25.4, gap: 2, hexR: 5, cols: 8, rows: 8,
     text: "HELLO ♥", pitch: 7, flipH: false, flipV: false, tol: 0,
     lampLm: 1500, lampBeam: 36, ambient: 50,
     obsBack: 0.4, obsH: 1.65, planeH: 1.3,
-    optOn: { day: true, hour: true, dist: true, devZ: true, devX: true, planeH: true, obsBack: true, obsH: true, lampY: true, lampZ: true },
-    optRange: { day: 1, hour: 1, dist: 1, devZ: 1, devX: 1, planeH: 1, obsBack: 1, obsH: 0.2, lampY: 1, lampZ: 1 },
+    optOn: { day: true, hour: true, dist: true, devZ: true, devX: true, planeH: true, ceilH: true, obsBack: true, obsH: true, lampY: true, lampZ: true },
+    optRange: { day: 1, hour: 1, dist: 1, devZ: 1, devX: 1, planeH: 1, ceilH: 0.3, obsBack: 1, obsH: 0.2, lampY: 1, lampZ: 1 },
   });
   const up = (k) => (v) => setSt(s => ({ ...s, [k]: v }));
   const res = useMemo(() => compute(st), [st]);
@@ -1336,26 +1426,25 @@ export default function EliografoStudio() {
   const stat = (k, v, hot) => (
     <div style={{ padding: "8px 10px", background: "#FFFFFF", border: `1px solid ${C.line}`, borderRadius: 8, minWidth: 90 }}>
       <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: ".07em" }}>{k}</div>
-      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, color: hot ? C.err : C.ink, marginTop: 2 }}>{v}</div>
+      <div style={{ fontFamily: "'SF Mono', ui-monospace, Menlo, monospace", fontSize: 15, color: hot ? C.err : C.ink, marginTop: 2 }}>{v}</div>
     </div>
   );
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', Inter, system-ui, sans-serif", padding: 18 }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;600&display=swap');
-        input,select,textarea{color-scheme:light} textarea{resize:vertical}
+      <style>{`input,select,textarea{color-scheme:light} textarea{resize:vertical}
         button:focus-visible,input:focus-visible{outline:2px solid ${C.gold};outline-offset:1px}`}</style>
 
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16, borderBottom: `1px solid ${C.line}`, paddingBottom: 12 }}>
         <div>
-          <h1 style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 26, margin: 0 }}>
-            Heliograph <span style={{ color: C.gold }}>Studio</span></h1>
+          <h1 style={{ fontSize: 24, margin: 0, fontWeight: 700, letterSpacing: "-0.02em" }}>
+            Heliograph <span style={{ color: C.dim, fontWeight: 500 }}>Studio</span></h1>
           <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>
             Write with reflected light — design your mirror array</div>
         </div>
         <nav style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           {[["home", "Overview"], ["studio", "Designer"], ["guide", "Materials & printing"]].map(([k, name]) => (
-            <button key={k} onClick={() => setPage(k)}
+            <button key={k} onClick={() => { setPage(k); try { window.scrollTo({ top: 0, behavior: "instant" }); } catch (e) { window.scrollTo(0, 0); } }}
               style={{ background: page === k ? C.ink : "transparent", color: page === k ? "#FFFFFF" : C.ink,
                 border: `1px solid ${page === k ? C.ink : C.line}`, borderRadius: 980, padding: "8px 16px",
                 fontWeight: 600, fontSize: 13, cursor: "pointer" }}>{name}</button>))}
@@ -1381,14 +1470,14 @@ export default function EliografoStudio() {
                 } catch (err) { alert("Cannot generate: " + err.message); }
               }}
               style={{ background: C.goldFill, color: "#FFFFFF", border: "none", borderRadius: 980, padding: "10px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              ⬇ Generate print files (STL + guide)</button>
-            <button onClick={exportConfig} style={{ background: "transparent", color: C.gold, border: `1px solid ${C.gold}`, borderRadius: 980, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              Generate print files</button>
+            <button onClick={exportConfig} style={{ background: "#EBDEAA", color: C.ink, border: "none", borderRadius: 980, padding: "10px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
               Export config.json</button>
           </>}
         </nav>
       </header>
 
-      {page === "home" && <HomePage go={() => setPage("studio")} />}
+      {page === "home" && <HomePage go={() => { setPage("studio"); try { window.scrollTo({ top: 0, behavior: "instant" }); } catch (e) { window.scrollTo(0, 0); } }} />}
       {page === "guide" && <GuidePage />}
       {page === "studio" && <>
 
@@ -1396,7 +1485,7 @@ export default function EliografoStudio() {
         {/* -------- controlli -------- */}
         <div>
           <section style={S.group}>
-            <h2 style={S.gtitle}>Light</h2>
+            <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#EBDEAA", marginRight: 8 }} />Light</h2>
             <Seg value={st.lightMode} set={up("lightMode")}
               options={[["sunAuto", "Sun · auto"], ["sunManual", "Sun · manual"], ["lamp", "Spotlight"]]} />
             {st.lightMode === "sunAuto" && (<>
@@ -1417,10 +1506,11 @@ export default function EliografoStudio() {
                     (pos) => { setGeoMsg(null); setSt(x => ({ ...x, lat: Math.round(pos.coords.latitude * 100) / 100, lon: Math.round(pos.coords.longitude * 100) / 100 })); },
                     () => setGeoMsg("Permission denied or unavailable: enter lat/lon manually."),
                     { timeout: 8000 });
-                }} style={{ background: "transparent", color: C.gold, border: `1px solid ${C.gold}`, borderRadius: 980, padding: "7px 14px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
-                  📍 Use my location</button>
+                }} style={{ background: "#ADDAC5", color: C.ink, border: "none", borderRadius: 980, padding: "8px 14px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                  Use my location</button>
                 {geoMsg && <span style={{ fontSize: 11, color: C.dim }}>{geoMsg}</span>}
               </div>
+              <div style={{ fontSize: 12, color: C.dim, marginTop: 2, marginBottom: 8 }}>Solar disc today: {((I.sdiv || 0.0093) * R2D).toFixed(3)}° <span style={{ color: "#C7861A" }}>(0.525–{"0.543"}° across the year — Earth–Sun distance)</span></div>
               <Slider label="Projection azimuth (0=N 90=E 180=S 270=W)" value={st.projAz} set={up("projAz")} min={0} max={359} unit="°" />
               {I.sunElev !== undefined && (
                 <div style={{ fontSize: 12, fontFamily: "'SF Mono', ui-monospace, Menlo, monospace", color: I.sunElev > 0 ? C.ok : C.err }}>
@@ -1447,10 +1537,19 @@ export default function EliografoStudio() {
           </section>
 
           <section style={S.group}>
-            <h2 style={S.gtitle}>Space</h2>
+            <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#A7D9E2", marginRight: 8 }} />Space</h2>
             <Slider label="Projection distance" value={st.dist} set={up("dist")} min={0.5} max={30} step={0.5} unit=" m" />
-            <Slider label="Surface (0 = floor, 90 = wall)" value={st.planeTilt} set={up("planeTilt")} min={0} max={90} unit="°" />
-            {st.planeTilt > 5 && <Slider label="Text center height on wall" value={st.planeH} set={up("planeH")} min={0.2} max={4} step={0.05} unit=" m" />}
+            <Slider label="Surface (0 = floor · 90 = wall · 180 = ceiling)" value={st.planeTilt} set={up("planeTilt")} min={0} max={180} step={5} unit="°" />
+            <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+              {[["Floor", 0], ["Wall", 90], ["Ceiling", 180]].map(([n, v]) =>
+                <button key={n} onClick={() => up("planeTilt")(v)}
+                  style={{ flex: 1, background: st.planeTilt === v ? C.goldFill : "#EDEDF0", color: st.planeTilt === v ? "#FFF" : C.ink,
+                    border: "none", borderRadius: 8, padding: "6px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{n}</button>)}
+            </div>
+            {st.planeTilt > 5 && st.planeTilt <= 90 &&
+              <Slider label="Text center height on wall" value={st.planeH} set={up("planeH")} min={0.2} max={4} step={0.05} unit=" m" />}
+            {st.planeTilt > 90 &&
+              <Slider label="Ceiling height" value={st.ceilH} set={up("ceilH")} min={1.8} max={6} step={0.05} unit=" m" />}
             <Slider label="Array sideways offset (+right −left)" value={st.devX} set={up("devX")} min={-3} max={3} step={0.05} unit=" m" />
             <Slider label="Array height above floor" value={st.devZ} set={up("devZ")} min={0.2} max={3} step={0.05} unit=" m" />
             <label style={{ ...S.label, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", textTransform: "none", fontSize: 13, color: C.ink }}>
@@ -1462,7 +1561,7 @@ export default function EliografoStudio() {
           </section>
 
           <section style={S.group}>
-            <h2 style={S.gtitle}>Mirrors</h2>
+            <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#AAD9D3", marginRight: 8 }} />Mirrors</h2>
             <Seg value={st.shape} set={up("shape")} options={[["hex", "Hexagonal"], ["square", "Square"]]} />
             <div style={S.row}>
               <Num label="Width" unit="mm" value={st.mirrorW} set={up("mirrorW")} step={0.1} />
@@ -1485,6 +1584,10 @@ export default function EliografoStudio() {
                 <option value={0.82}>Acrylic mirror (~82%, less flat: softer spots)</option>
                 <option value={0.63}>Polished stainless steel (~63%)</option>
               </select>
+              <div style={{ marginTop: 10 }}>
+                <Num label="Slope error σ" unit="mrad" value={st.slopeMrad} set={up("slopeMrad")} step={0.25} min={0} max={5} />
+                <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Surface/mounting accuracy: 0.5 first-surface glass · 1–2 printed pillars + craft mirrors · 3+ flexible acrylic</div>
+              </div>
             </div>
             <div style={{ fontSize: 12.5, color: C.steel, fontFamily: "'SF Mono', ui-monospace, Menlo, monospace", marginTop: 6 }}>
               Actual array width: <b style={{ color: C.gold }}>{(I.arraySize || 0).toFixed(2)} m</b> · {I.nMirrors ?? "-"} mirrors
@@ -1492,8 +1595,8 @@ export default function EliografoStudio() {
           </section>
 
           <section style={S.group}>
-            <h2 style={S.gtitle}>Text</h2>
-            <textarea rows={2} style={{ ...S.input, fontFamily: "'JetBrains Mono', monospace", fontSize: 15, marginBottom: 10 }}
+            <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#F5B2A1", marginRight: 8 }} />Text</h2>
+            <textarea rows={2} style={{ ...S.input, fontFamily: "'SF Mono', ui-monospace, Menlo, monospace", fontSize: 15, marginBottom: 10 }}
               value={st.text} onChange={e => up("text")(e.target.value)} placeholder="Your message…" />
             <Slider label="Dot pitch" value={st.pitch} set={up("pitch")} min={1} max={30} step={0.5} unit=" cm" />
             <div style={{ display: "flex", gap: 14, fontSize: 13 }}>
@@ -1508,19 +1611,25 @@ export default function EliografoStudio() {
         <div>
           <section style={{ ...S.group, marginBottom: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-              <h2 style={S.gtitle}>Scene</h2>
+              <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#ADDAC5", marginRight: 8 }} />Scene</h2>
               <div style={{ fontSize: 11, color: C.dim }}>Read-only preview — set every value in the panels; the scene updates live</div>
             </div>
             <SceneViews st={st} I={I} patch={(p) => setSt(s => ({ ...s, ...p }))} />
             <div style={{ ...S.row, marginTop: 10, marginBottom: 0, maxWidth: 420 }}>
               <Num label="Viewer behind the array" unit="m" value={st.obsBack} set={up("obsBack")} step={0.5} min={0} />
-              <Num label="Eye height" unit="m" value={st.obsH} set={up("obsH")} step={0.05} min={0.5} />
+              <Num label="Eye height" unit="m" value={st.obsH} set={up("obsH")} step={0.05} min={0.4} />
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                {[["Standing", 1.65], ["Sitting", 1.15], ["Lying down", 0.5]].map(([n, v]) =>
+                  <button key={n} onClick={() => up("obsH")(v)}
+                    style={{ flex: 1, background: Math.abs(st.obsH - v) < 0.03 ? C.goldFill : "#EDEDF0", color: Math.abs(st.obsH - v) < 0.03 ? "#FFF" : C.ink,
+                      border: "none", borderRadius: 8, padding: "6px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{n}</button>)}
+              </div>
             </div>
           </section>
 
-          <section style={{ ...S.group, marginBottom: 14, borderColor: C.gold, borderWidth: 1.5 }}>
+          <section style={{ ...S.group, marginBottom: 14, background: "#FAFCEF", borderColor: "#DCE690" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-              <h2 style={S.gtitle}>Recommended parameters</h2>
+              <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#C6DA69", marginRight: 8 }} />Recommended parameters</h2>
               <div style={{ fontSize: 11, color: C.dim }}>tolerance = how far the optimizer may move each value · check = locked (tolerance 0)</div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(270px, 1fr))", gap: "0 22px" }}>
@@ -1531,7 +1640,8 @@ export default function EliografoStudio() {
                 ["devX", "Array sideways offset", (st.devX || 0) + " m", true, "m"],
                 ["obsBack", "Array–viewer distance", st.obsBack + " m", true, "m"],
                 ["obsH", "Eye height", st.obsH + " m", true, "m"],
-                ["planeH", "Text height on wall", st.planeH + " m", st.planeTilt > 5, "m"],
+                ["planeH", "Text height on wall", st.planeH + " m", st.planeTilt > 5 && st.planeTilt <= 90, "m"],
+                ["ceilH", "Ceiling height", st.ceilH + " m", st.planeTilt > 90, "m"],
                 ["lampY", "Spotlight: forward", st.lampY + " m", st.lightMode === "lamp", "m"],
                 ["lampZ", "Spotlight: height", st.lampZ + " m", st.lightMode === "lamp", "m"]]
                 .filter(r => r[3]).map(([k, name, val, , unit]) => (
@@ -1564,7 +1674,7 @@ export default function EliografoStudio() {
                   if (r && r.best) r.best.patch.devTiltAuto = true;
                   setOptRes(r ? { ...r, place: true } : "no-sun");
                 }}
-                style={{ background: "transparent", color: C.gold, border: `1px solid ${C.gold}`, borderRadius: 980, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                style={{ background: "#A7D9E2", color: C.ink, border: "none", borderRadius: 980, padding: "10px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
                 title="Moves only the array (sideways, height, tilt set to auto). Everything else stays as you set it.">
                 Auto-place the array</button>
               {optRes === "no-sun" && <span style={{ fontSize: 12, color: C.err }}>Sun below the horizon: change the time or give Day/Time some tolerance.</span>}
@@ -1577,7 +1687,7 @@ export default function EliografoStudio() {
               {optRes && optRes !== "no-sun" && !optRes.place && optRes.frees && optRes.frees.length > 0 && !optRes.best && !optRes.infeasible &&
                 <span style={{ fontSize: 12, color: C.ok }}>✓ Already at the optimum within tolerances: spot on surface {(optRes.cur.spot * 100).toFixed(1)} cm, contrast {optRes.cur.contrast.toFixed(1)}×. Widen the tolerances to improve further.</span>}
             </div>
-            {appliedMsg && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: C.ok }}>{appliedMsg}</div>}
+            {appliedMsg && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: "#1D4A2A", background: "#B2DBB3", borderRadius: 10, padding: "8px 12px", display: "inline-block" }}>{appliedMsg}</div>}
             {optRes && optRes !== "no-sun" && optRes.best && (
               <div style={{ marginTop: 10, background: "#FFFFFF", border: `1px solid ${C.line}`, borderRadius: 8, padding: 10 }}>
                 <div style={{ ...S.label, marginBottom: 6 }}>Best focus and brightness within the tolerances:</div>
@@ -1605,8 +1715,8 @@ export default function EliografoStudio() {
 
           <section style={{ ...S.group, marginBottom: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-              <h2 style={S.gtitle}>Simulated projection</h2>
-              <div style={{ fontSize: 11, color: C.dim }}>come la vede chi guarda la superficie stando dietro l'array</div>
+              <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#EDC7A0", marginRight: 8 }} />Simulated projection</h2>
+              <div style={{ fontSize: 11, color: C.dim }}>as seen by someone looking at the surface from behind the array</div>
             </div>
             <canvas ref={projRef} width={860} height={430} style={{ width: "100%", borderRadius: 8, border: `1px solid ${C.line}`, display: "block" }} />
             <div style={{ marginTop: 10 }}>
@@ -1616,7 +1726,7 @@ export default function EliografoStudio() {
           </section>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-            {stat("Specchi", I.nMirrors ?? "—")}
+            {stat("Mirrors", I.nMirrors ?? "—")}
             {stat("Text dots", I.nPoints ?? "—", I.nPoints > I.nMirrors)}
             {stat("Spot on surface", I.spotEff ? (I.spotEff * 100).toFixed(1) + " cm" + (I.meanElong > 1.2 ? ` (beam ${(I.spotD * 100).toFixed(1)}, ×${I.meanElong.toFixed(1)})` : "") : "—", (I.spotEff ?? 0) > 1.35 * st.pitch / 100)}
             {stat("Array tilt", I.devTilt !== undefined ? I.devTilt.toFixed(1) + "°" : "—")}
@@ -1627,7 +1737,7 @@ export default function EliografoStudio() {
           </div>
 
           <section style={S.group}>
-            <h2 style={S.gtitle}>Focus & visibility</h2>
+            <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#F2A39C", marginRight: 8 }} />Focus & visibility</h2>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
               {stat("Min spot Ø (physical limit)", I.minSpot ? (I.minSpot * 100).toFixed(1) + " cm" : "—")}
               {stat("Recommended mirror", I.wRec ? I.wRec.toFixed(0) + " mm" : "—")}
@@ -1672,7 +1782,7 @@ export default function EliografoStudio() {
             </section>)}
 
           <section style={S.group}>
-            <h2 style={S.gtitle}>Array — pillar tilts</h2>
+            <h2 style={S.gtitle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 5, background: "#B2DBB3", marginRight: 8 }} />Array — pillar tilts</h2>
             <canvas ref={arrRef} width={860} height={300} style={{ width: "100%", borderRadius: 8, border: `1px solid ${C.line}`, display: "block" }} />
           </section>
         </div>

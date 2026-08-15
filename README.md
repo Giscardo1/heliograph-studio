@@ -1,8 +1,10 @@
 # Heliograph Studio
 
+**[▶ Try it live](https://giscardo1.github.io/heliograph-studio/)** — no install, runs in your browser.
+
 **Write messages with sunlight.** Design a 3D-printed mirror array — a panel of small mirrors,
 each tilted at a precisely computed angle — that reflects the sun (or a spotlight) into glowing
-dots of light spelling out a message on a wall or on the ground.
+dots of light spelling out a message on a wall, on the ground, or on the ceiling.
 
 This project is a companion / add-on to Ben Bartlett's wonderful
 [**3D-printed-mirror-array**](https://github.com/bencbartlett/3D-printed-mirror-array)

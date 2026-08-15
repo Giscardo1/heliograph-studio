@@ -7,6 +7,7 @@ import numpy as np
 from . import optics, matching, geometry
 from .textraster import rasterize
 from .solar import solar_position
+from .validation import validate_config
 
 MAX_TILT_DEG = 32.0
 
@@ -16,7 +17,12 @@ def resolve_light(cfg):
     if light["mode"] == "sun" and light["sun"].get("auto"):
         from datetime import datetime, timezone
         s = light["sun"]
-        dt = datetime.fromisoformat(s["datetime_utc"]).replace(tzinfo=timezone.utc)
+        raw = str(s["datetime_utc"]).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        light["day_of_year"] = dt.timetuple().tm_yday
         elev, az_north = solar_position(dt, s["lat"], s["lon"])
         if elev <= 0:
             raise ValueError(f"Il sole e' sotto l'orizzonte ({elev:.1f} deg) "
@@ -34,6 +40,7 @@ def compute_assignments(cfg):
     dispositivo viene scelta come rotazione (attorno a x) della normale media:
     e' la posa naturale in cui terrai in mano l'array, e minimizza le
     inclinazioni locali dei pilastri (miglioria rispetto all'originale)."""
+    validate_config(cfg)
     if cfg["device"].get("tilt_deg") == "auto":
         probe = json.loads(json.dumps(cfg))
         probe["device"]["tilt_deg"] = 0.0
@@ -73,7 +80,8 @@ def _compute(cfg):
     center = np.asarray(dev["center_m"], float)
     P0, n_v, r, s = optics.focal_plane_frame(cfg["plane"]["distance_m"],
                                              cfg["plane"]["tilt_deg"], center,
-                                             cfg["plane"].get("center_height_m"))
+                                             cfg["plane"].get("center_height_m"),
+                                             cfg["plane"].get("ceiling_height_m"))
     fh = cfg["text"].get("flip_h", False)
     fv = cfg["text"].get("flip_v", False)
     t3d = np.array([P0 + (-a if fh else a) * r + (-b if fv else b) * s
@@ -101,7 +109,7 @@ def _compute(cfg):
                          normal_local=n_l.tolist(), tilt_deg=tilt,
                          path_m=path, hit_err_m=err,
                          spot_r_m=optics.spot_radius_m(light, mp,
-                                                       dev["mirror_width_mm"] / 1000.0, path)))
+                                                       dev["mirror_width_mm"] / 1000.0, path, slope_mrad=cfg.get("photometry", {}).get("slope_error_mrad", 0.0))))
     return rows, dict(light=light, P0=P0, n_v=n_v, r=r, s=s, offsets=offsets,
                       targets2d=targets2d, assign=assign, tilt_deg=dev["tilt_deg"])
 
@@ -130,18 +138,38 @@ def occlusion_fraction(cfg, rows, ctx):
     return occ / max(1, len(rows))
 
 
-def partition(offsets, footprint_mm, bed_wh_mm):
-    """Assegna ogni pilastro a una piastrella del piatto di stampa."""
-    half = footprint_mm / 2.0
-    xmin, ymin = offsets.min(axis=0) - half
-    xmax, ymax = offsets.max(axis=0) + half
-    bw, bh = bed_wh_mm
-    nx = max(1, math.ceil((xmax - xmin) / bw))
-    ny = max(1, math.ceil((ymax - ymin) / bh))
+def footprint_xy(footprint_mm, shape):
+    """Ingombro del pilastro lungo x e y. L'esagono (piatto-su-piatto lungo x)
+    e' piu' largo sulle punte: 2/sqrt(3) volte l'apotema doppia."""
+    fp = float(footprint_mm)
+    return (fp, fp * 2.0 / math.sqrt(3.0)) if shape == "hex" else (fp, fp)
+
+
+def partition(offsets, footprint_mm, bed_wh_mm, shape="hex"):
+    """Assegna ogni pilastro a una piastrella del piatto di stampa.
+
+    I pilastri sono assegnati per centro, ma ciascuno sporge footprint/2 oltre
+    il proprio centro: la cella utile per i CENTRI deve quindi essere
+    (piatto - footprint), altrimenti la tessera stampata eccede il piano.
+    """
+    offsets = np.asarray(offsets, dtype=float)
+    if offsets.ndim != 2 or offsets.shape[1] != 2 or len(offsets) == 0:
+        raise ValueError("offsets non validi")
+    bw, bh = float(bed_wh_mm[0]), float(bed_wh_mm[1])
+    fpx, fpy = footprint_xy(footprint_mm, shape)
+    if bw <= fpx or bh <= fpy:
+        raise ValueError(
+            f"Piatto {bw:.0f}x{bh:.0f} mm troppo piccolo: un singolo pilastro "
+            f"occupa {fpx:.1f}x{fpy:.1f} mm")
+    ux, uy = bw - fpx, bh - fpy        # larghezza utile per i centri
+    cx0 = float(offsets[:, 0].min())
+    cy0 = float(offsets[:, 1].min())
+    nx = max(1, int(math.ceil((float(offsets[:, 0].max()) - cx0) / ux)))
+    ny = max(1, int(math.ceil((float(offsets[:, 1].max()) - cy0) / uy)))
     tiles = {}
     for idx, (a, b) in enumerate(offsets):
-        tx = min(nx - 1, int((a - xmin) / bw))
-        ty = min(ny - 1, int((b - ymin) / bh))
+        tx = min(nx - 1, max(0, int(math.floor((a - cx0) / ux))))
+        ty = min(ny - 1, max(0, int(math.floor((b - cy0) / uy))))
         tiles.setdefault((tx, ty), []).append(idx)
     return tiles, (nx, ny)
 
@@ -187,7 +215,7 @@ def generate(cfg, out_dir, bed_wh_mm=(220.0, 220.0)):
             status = "OK" if dev_max < 1e-4 else "DIVERGENZA! Controlla i parametri."
             print(f"  Verifica incrociata con l'app web: scarto max {dev_max:.2e} ({status})")
 
-    tiles, (nx, ny) = partition(ctx["offsets"], footprint, bed_wh_mm)
+    tiles, (nx, ny) = partition(ctx["offsets"], footprint, bed_wh_mm, dev["mirror_shape"])
     files = []
     for (tx, ty), idxs in sorted(tiles.items()):
         tris = []

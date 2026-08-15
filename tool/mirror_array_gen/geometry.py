@@ -102,11 +102,33 @@ def base_pad(center_ab, shape, footprint_mm, pad_h_mm=3.0):
 
 
 def write_stl(triangles, path):
-    from stl import mesh as stlmesh
-    data = np.zeros(len(triangles), dtype=stlmesh.Mesh.dtype)
-    for k, t in enumerate(triangles):
-        data["vectors"][k] = np.asarray(t, dtype=np.float32)
+    """Scrive un STL binario. Usa numpy-stl se presente, altrimenti un writer
+    interno: il generatore non deve fallire per una dipendenza opzionale."""
+    tris = [np.asarray(t, dtype=float) for t in triangles]
+    if not tris:
+        raise ValueError("Nessuna faccia da scrivere nello STL")
+    for t in tris:
+        if t.shape != (3, 3) or not np.isfinite(t).all():
+            raise ValueError("Triangolo STL non valido (forma errata o NaN/Inf)")
+    try:
+        from stl import mesh as stlmesh
+    except ModuleNotFoundError:
+        import struct
+        with open(path, "wb") as f:
+            f.write(b"Heliograph Studio - binary STL".ljust(80, b" "))
+            f.write(struct.pack("<I", len(tris)))
+            for t in tris:
+                c = np.cross(t[1] - t[0], t[2] - t[0])
+                nrm = np.linalg.norm(c)
+                n = c / nrm if nrm > 1e-15 else np.zeros(3)
+                f.write(struct.pack("<3f", *n))
+                f.write(struct.pack("<9f", *t.astype(np.float32).ravel()))
+                f.write(struct.pack("<H", 0))
+        return len(tris)
+    data = np.zeros(len(tris), dtype=stlmesh.Mesh.dtype)
+    for k, t in enumerate(tris):
+        data["vectors"][k] = t.astype(np.float32)
     m = stlmesh.Mesh(data)
     m.update_normals()
     m.save(path)
-    return len(triangles)
+    return len(tris)
