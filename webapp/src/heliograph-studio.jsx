@@ -656,10 +656,19 @@ function SceneViews({ st, I, patch }) {
   };
   const stack = (list) => list.filter(Boolean).map((a, i) => badge(i, a.t, a.c));
   // zona occupata dalla pila di avvisi in alto a sinistra (per non nasconderci etichette sotto)
-  const nWarnTop = [(AL.graze || AL.wide), AL.overlap, AL.far].filter(Boolean).length;
-  const nWarnSide = [AL.backlit, AL.occ, AL.shadow, (AL.graze || AL.wide), AL.overlap].filter(Boolean).length;
-  const bzY = (n) => n ? 6 + n * 20 + 6 : 0;
-  const clearOf = (x, y, n) => (x < 200 && y < bzY(n)) ? bzY(n) + 10 : y;
+  const bw = (t) => (t ? t.length * 5.7 + 14 + 6 : 0);
+  const warnTop = [(AL.graze || AL.wide) ? (AL.graze ? `\u26A0 grazing light: \u2212${I.lightLossPct}% light` : `\u26A0 wide angles: \u2212${I.lightLossPct}% light`) : null,
+                   AL.overlap ? "\u26A0 spot > pitch: letters smear" : null,
+                   AL.far ? "\u26A0 long distance: dim spots" : null].filter(Boolean);
+  const warnSide = [AL.backlit ? "\u26A0 light from behind the array" : null,
+                    AL.occ ? "\u26A0 the array hides part of the text" : null,
+                    AL.shadow ? "\u26A0 your shadow covers the array" : null,
+                    (AL.graze || AL.wide) ? `\u26A0 grazing light: \u2212${I.lightLossPct}%` : null,
+                    AL.overlap ? "\u26A0 spot > pitch" : null].filter(Boolean);
+  const bzY = (list) => list.length ? 6 + list.length * 20 + 6 : 0;
+  const bzX = (list) => list.length ? Math.max(...list.map(bw)) : 0;
+  // sposta l'etichetta sotto la pila di avvisi se ci finirebbe sopra
+  const clearOf = (x, y, list) => (x < bzX(list) && y < bzY(list)) ? bzY(list) + 11 : y;
 
   /* vista dall'alto, frame stanza: scritta ferma, array mobile. u = avanti (y), v = laterale (x) */
   const RD = st.dist;
@@ -834,7 +843,7 @@ function SceneViews({ st, I, patch }) {
           {lbl(tLamp[0], tLamp[1] - 10, `spotlight (${st.lampX}; ${st.lampY} m)`, C.gold)}
           <circle cx={tLamp[0]} cy={tLamp[1]} r="15" fill="transparent" {...grab("lampT")} /></>
           : <>{dash(sTip, tArr, "#E8A93C")}<circle cx={sTip[0]} cy={sTip[1]} r="8" fill="#FFD60A" stroke="#E8A93C" strokeWidth="2" />
-          {lbl(sTip[0], clearOf(sTip[0] - 40, sTip[1] - 12, nWarnTop), `sun az.rel ${azRel.toFixed(0)}\u00b0`, "#C7861A")}
+          {lbl(sTip[0], clearOf(sTip[0] - 40, sTip[1] - 12, warnTop), `sun az.rel ${azRel.toFixed(0)}\u00b0`, "#C7861A")}
           <circle cx={sTip[0]} cy={sTip[1]} r="16" fill="transparent" {...grab("sunT")} /></>}
         {dash(tArr, tTc)}
         {(() => { const aw = Math.max(6, 2 * half * T.sc); return <>
@@ -846,7 +855,7 @@ function SceneViews({ st, I, patch }) {
             const svg = e.currentTarget.ownerSVGElement, r = svg.getBoundingClientRect();
             lastPt.current = { X: (e.clientX - r.left) * W / Math.max(1, r.width), Y: (e.clientY - r.top) * H / Math.max(1, r.height), dist0: st.dist, lampX0: st.lampX, lampY0: st.lampY, obs0: st.obsBack, sc: T.sc }; }} />
         <circle cx={tObs[0]} cy={tObs[1]} r="4" fill="#6E6758" />
-        {lbl(tObs[0], clearOf(tObs[0] - 40, tObs[1] - 16, nWarnTop), `viewer (−${st.obsBack} m)`, "#6E6758")}
+        {lbl(tObs[0], clearOf(tObs[0] - 40, tObs[1] - 16, warnTop), `viewer (−${st.obsBack} m)`, "#6E6758")}
         <circle cx={tObs[0]} cy={tObs[1]} r="13" fill="transparent" {...grab("obsT")} />
         <line x1={tT1[0]} y1={tT1[1]} x2={tT2[0]} y2={tT2[1]} stroke={C.ink} strokeWidth="3" />
         {lbl(tTc[0], tT1[1] + 14, `text at ${st.dist} m on ${surfName} · width ${textW.toFixed(2)} m`, C.ink)}
@@ -865,7 +874,7 @@ function SceneViews({ st, I, patch }) {
           {lbl(sLamp[0], sLamp[1] - 10, `spotlight h ${st.lampZ} m`, C.gold)}
           <circle cx={sLamp[0]} cy={sLamp[1]} r="15" fill="transparent" {...grab("lampS")} /></>
           : <>{dash(sSunTip, sArrC, "#E8A93C")}<circle cx={sSunTip[0]} cy={sSunTip[1]} r="8" fill="#FFD60A" stroke="#E8A93C" strokeWidth="2" />
-          {lbl(sSunTip[0], clearOf(sSunTip[0] - 40, sSunTip[1] - 12, nWarnSide), `elev ${elev.toFixed(0)}° · ${Math.abs(azRel) > 135 ? "in front" : Math.abs(azRel) > 45 ? "TO THE SIDE" : "behind"}`, "#C7861A")}
+          {lbl(sSunTip[0], clearOf(sSunTip[0] - 40, sSunTip[1] - 12, warnSide), `elev ${elev.toFixed(0)}° · ${Math.abs(azRel) > 135 ? "in front" : Math.abs(azRel) > 45 ? "TO THE SIDE" : "behind"}`, "#C7861A")}
           <circle cx={sSunTip[0]} cy={sSunTip[1]} r="16" fill="transparent" {...grab("sunS")} /></>}
         {dash(sArrC, sP0)}
         {(() => { const fpx = [Math.sin(gR), -Math.cos(gR)];   // normale "fronte" in pixel
@@ -873,9 +882,19 @@ function SceneViews({ st, I, patch }) {
           return (<>
             <line x1={sArr1[0]} y1={sArr1[1]} x2={sArr2[0]} y2={sArr2[1]} stroke={I.backlit ? C.err : "#5B6670"} strokeWidth="6" strokeLinecap="round" />
             <line x1={f1[0]} y1={f1[1]} x2={f2[0]} y2={f2[1]} stroke="#5FB8CE" strokeWidth="3.5" strokeLinecap="round" />
-            {lbl(f2[0] + fpx[0] * 17, Math.max(f2[1] + fpx[1] * 17 + 4, Math.min(sArr1[1], sArr2[1]) + 14), "mirrors", "#3E93AA")}
+            {(() => { const txtA = `array ${(2 * half).toFixed(2)} m \u00b7 h ${st.devZ} m \u00b7 tilt ${(I.devTilt ?? 0).toFixed(0)}\u00b0`;
+          const x0 = sArrC[0] - 10 - txtA.length * 5.4;
+          const moved = x0 < sObsH[0] + 14 || (x0 < bzX(warnSide) && Math.min(sArr1[1], sArr2[1]) - 17 < bzY(warnSide));
+          return lbl(f2[0] + fpx[0] * 17, Math.max(f2[1] + fpx[1] * 17 + 4,
+            Math.max(sArr1[1], sArr2[1]) + (moved ? 30 : 14)), "mirrors", "#3E93AA"); })()}
           </>); })()}
-        {lbl(sArrC[0] - 10, Math.min(sArr1[1], sArr2[1]) - 17, `array ${(2 * half).toFixed(2)} m · h ${st.devZ} m · tilt ${(I.devTilt ?? 0).toFixed(0)}°`, I.backlit ? C.err : C.steel, "end")}
+        {(() => { const txt = `array ${(2 * half).toFixed(2)} m \u00b7 h ${st.devZ} m \u00b7 tilt ${(I.devTilt ?? 0).toFixed(0)}\u00b0`;
+          const yTop = Math.min(sArr1[1], sArr2[1]) - 17, x0 = sArrC[0] - 10 - txt.length * 5.4;
+          // sotto l'array se l'etichetta finirebbe sull'osservatore o sui badge
+          const clash = x0 < sObsH[0] + 14 || (x0 < bzX(warnSide) && yTop < bzY(warnSide));
+          return lbl(clash ? sArrC[0] + 12 : sArrC[0] - 10,
+                     clash ? Math.max(sArr1[1], sArr2[1]) + 15 : yTop,
+                     txt, I.backlit ? C.err : C.steel, clash ? "start" : "end"); })()}
         <line x1={sArr1[0]} y1={sArr1[1]} x2={sArr2[0]} y2={sArr2[1]} stroke="transparent" strokeWidth="18" {...grab("array")} />
                 <line x1={sObsF[0]} y1={sObsF[1]} x2={sObsH[0]} y2={sObsH[1]} stroke="#6E6758" strokeWidth="2" />
         {(() => { const ex = sObsH[0], ey = sObsH[1] - 5, ew = 9, eh = 5.5;

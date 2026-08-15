@@ -2,6 +2,17 @@
 
 **[▶ Try it live](https://giscardo1.github.io/heliograph-studio/)** — no install, runs in your browser.
 
+![The designer: light, geometry and a live top/side view of the scene](docs/designer.png)
+
+*Set the light (real sun from date, time and location — or a spotlight), the surface, the array
+and the text. The scene updates live and warns you about the ways this can physically fail:
+grazing light, your own shadow on the array, the panel hiding the text from the viewer.*
+
+![Simulated projection of the message on the surface](docs/projection.png)
+
+*The simulated projection — real spot sizes from solar divergence and oblique stretching,
+photometric contrast against ambient light, and a tolerance slider for "what if I misplace it".*
+
 **Write messages with sunlight.** Design a 3D-printed mirror array — a panel of small mirrors,
 each tilted at a precisely computed angle — that reflects the sun (or a spotlight) into glowing
 dots of light spelling out a message on a wall, on the ground, or on the ceiling.
