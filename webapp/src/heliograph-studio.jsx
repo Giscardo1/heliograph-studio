@@ -163,6 +163,7 @@ function solarPosition(dateUTC, lat, lon) {
 
 /* ---------- ottica (identica a optics.py) ---------- */
 const sunDirection = (e, a) => [Math.cos(e * D2R) * Math.sin(a * D2R), -Math.cos(e * D2R) * Math.cos(a * D2R), Math.sin(e * D2R)];
+const BUILD = "2026-08-15 11:06 UTC";
 function nowLocalISO() {
   const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`;
@@ -221,7 +222,7 @@ function compute(st) {
   const SDIVE = Math.sqrt(SDIV * SDIV + SBLUR * SBLUR);
   // testo → bersagli
   const { pts: t2d, unknown } = rasterize(st.text, st.pitch / 100);
-  if (unknown.length) warn.push({ lvl: "warn", msg: `Caratteri non nel font, ignorati: ${unknown.join(" ")}` });
+  if (unknown.length) warn.push({ lvl: "warn", msg: `Characters not in the font, skipped: ${unknown.join(" ")}` });
   // griglia
   const spacing = st.mirrorW + st.gap;
   const offsets = st.shape === "hex" ? hexGrid(st.hexR, spacing) : squareGrid(st.cols, st.rows, spacing);
@@ -330,7 +331,7 @@ function compute(st) {
       warn.push({ lvl: "warn",
         msg: `Contrast ${info.contrast.toFixed(1)}×: with this ambient light the text will look faint. Project onto a shaded surface.` });
   }
-  if (rows.some(r => !r.valid)) warn.push({ lvl: "err", msg: "Alcuni raggi non intersecano il piano (piano dietro l'array o raggi paralleli). Rivedi geometria." });
+  if (rows.some(r => !r.valid)) warn.push({ lvl: "err", msg: "Some rays never reach the surface (surface behind the array, or rays parallel to it). Check the geometry." });
   const worstAng = Math.max(info.maxInc || 0, info.maxExp || 0);
   info.lightLossPct = Math.round(100 * (1 - Math.cos(Math.min(89, worstAng) * D2R)));
   if (!info.backlit && worstAng > 45 && info.maxInc <= 60)
@@ -351,7 +352,7 @@ function compute(st) {
   const eye = [0, -st.obsBack, st.obsH];
   const sight = V.unit(V.sub(pf.P0, eye));
   info.viewAngle = Math.asin(Math.max(0, Math.min(1, Math.abs(V.dot(sight, pf.nV))))) * R2D;
-  /* il pannello e' una superficie reale: puo' nascondere la scritta all'osservatore */
+  /* the panel is a real surface: it can hide the text from the viewer */
   const Zdev = deviceFrame(devTilt).Z;
   const aC = [st.devX || 0, 0, st.devZ], aR = info.arraySize / 2 + 0.02;
   const segHitsArray = (A, B) => {
@@ -391,7 +392,7 @@ function compute(st) {
   if (info.viewAngle < 15 && info.nPoints > 0)
     warn.push({ lvl: "warn", msg: `From the viewing spot you see the text at only ${info.viewAngle.toFixed(0)}° (heavily foreshortened): move closer to the text or raise the viewpoint.` });
   if (info.maxInc > 60) warn.push({ lvl: "err", msg: `Grazing incidence (${info.maxInc.toFixed(0)}° off normal): the mirrors capture very little light. With a low sun, aim the projection TOWARD the sun.` });
-  if (info.maxTilt > 32) warn.push({ lvl: "warn", msg: `Pilastri fino a ${info.maxTilt.toFixed(0)}°: difficili da stampare. Usa l'inclinazione automatica del dispositivo o avvicina il bersaglio.` });
+  if (info.maxTilt > 32) warn.push({ lvl: "warn", msg: `Pillars up to ${info.maxTilt.toFixed(0)}\u00b0: hard to print. Use the automatic array tilt, or move the target closer.` });
   if ((info.spotEff ?? info.spotD) > 1.35 * st.pitch / 100 && t2d.length)
     warn.push({ lvl: "warn", msg: `Spot ${(info.spotEff * 100).toFixed(1)} cm on the surface (beam Ø ${(info.spotD * 100).toFixed(1)}${info.meanElong > 1.3 ? `, stretched ×${info.meanElong.toFixed(1)} by the grazing angle` : ""}) > pitch ${st.pitch} cm: the letters smear together. ${info.meanElong > 1.3 ? "Raise the array or bring the text closer for a steeper impact, or increase the pitch." : "Increase the pitch or reduce the distance."}` });
   if (light.mode === "lamp" && st.lampY >= st.dist)
@@ -411,7 +412,7 @@ function compute(st) {
   return { rows, warn, info, t2d, pf, offsets, assign: m.assign, light, tolHits };
 }
 
-/* ---------- UI (tema chiaro "carta e sole") ---------- */
+/* ---------- UI ---------- */
 const PASTEL = { coral: "#F2A39C", peach: "#F5B2A1", sand: "#EDC7A0", cream: "#EBDEAA",
   lime: "#C6DA69", mint: "#B2DBB3", sage: "#ADDAC5", aqua: "#AAD9D3", sky: "#A7D9E2", rose: "#EF9394" };
 const C = { bg: "#FBFBFD", panel: "#FFFFFF", line: "#E5E5EA", ink: "#1D1D1F", dim: "#86868B",
@@ -836,7 +837,7 @@ function SceneViews({ st, I, patch }) {
 
   return (
     <div style={{ display: "flex", gap: 10, flexDirection: "column" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={svgStyle} role="img" aria-label="Vista dall'alto"
+      <svg viewBox={`0 0 ${W} ${H}`} style={svgStyle} role="img" aria-label="Top view"
         onPointerMove={moveTop} onPointerUp={endDrag} onPointerLeave={endDrag}>
         {lbl(W - 10, 14, "TOP VIEW", "#BDB49E", "end")}
         {isLamp ? <>{dash(tLamp, tArr)}<circle cx={tLamp[0]} cy={tLamp[1]} r="6" fill="#FFD60A" stroke="#E8A93C" strokeWidth="1.5" />
@@ -866,7 +867,7 @@ function SceneViews({ st, I, patch }) {
           AL.far && { t: "⚠ long distance: dim spots", c: "#C98A0F" },
         ])}
       </svg>
-      <svg viewBox={`0 0 ${W} ${H}`} style={svgStyle} role="img" aria-label="Vista laterale"
+      <svg viewBox={`0 0 ${W} ${H}`} style={svgStyle} role="img" aria-label="Side view"
         onPointerMove={moveSide} onPointerUp={endDrag} onPointerLeave={endDrag}>
         {lbl(W - 10, 14, "SIDE VIEW", "#BDB49E", "end")}
         <line x1={sFloor0[0]} y1={sFloor0[1]} x2={sFloor1[0]} y2={sFloor1[1]} stroke="#E4C89B" />
@@ -1457,7 +1458,7 @@ export default function EliografoStudio() {
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16, borderBottom: `1px solid ${C.line}`, paddingBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 24, margin: 0, fontWeight: 700, letterSpacing: "-0.02em" }}>
-            Heliograph <span style={{ color: C.dim, fontWeight: 500 }}>Studio</span></h1>
+            Heliograph <span style={{ color: C.dim, fontWeight: 500 }}>Studio</span><span style={{ fontSize: 10, color: C.dim, fontWeight: 400, marginLeft: 8, letterSpacing: 0 }} title="Build timestamp \u2014 check this matches the latest version">build {BUILD}</span></h1>
           <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>
             Write with reflected light — design your mirror array</div>
         </div>
@@ -1510,7 +1511,12 @@ export default function EliografoStudio() {
             {st.lightMode === "sunAuto" && (<>
               <div style={S.row}>
                 <div style={{ flex: 2 }}><label style={S.label}>Local date & time</label>
-                  <input type="datetime-local" style={S.input} value={st.dateLocal} onChange={e => up("dateLocal")(e.target.value)} /></div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input type="datetime-local" style={{ ...S.input, flex: 1 }} value={st.dateLocal} onChange={e => up("dateLocal")(e.target.value)} />
+                    <button onClick={() => setSt(x => ({ ...x, dateLocal: nowLocalISO(), tzOffset: -new Date().getTimezoneOffset() / 60 }))}
+                      title="Set to the current date and time"
+                      style={{ background: "#EBDEAA", color: C.ink, border: "none", borderRadius: 8, padding: "0 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Now</button>
+                  </div></div>
                 <Num label="Time zone" unit="UTC+" value={st.tzOffset} set={up("tzOffset")} step={0.5} />
               </div>
               <div style={S.row}>
@@ -1519,15 +1525,19 @@ export default function EliografoStudio() {
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
                 <button onClick={() => {
-                  if (!navigator.geolocation) { setGeoMsg("Geolocation is not available in this browser."); return; }
-                  setGeoMsg("Detecting your location…");
+                  if (!navigator.geolocation) { setGeoMsg("This browser has no geolocation API \u2014 type your latitude and longitude below."); return; }
+                  if (window.isSecureContext === false) { setGeoMsg("Location needs a secure page (https). Open the online version, or type lat/lon below."); return; }
+                  setGeoMsg("Detecting your location\u2026");
                   navigator.geolocation.getCurrentPosition(
-                    (pos) => { setGeoMsg(null); setSt(x => ({ ...x, lat: Math.round(pos.coords.latitude * 100) / 100, lon: Math.round(pos.coords.longitude * 100) / 100 })); },
-                    () => setGeoMsg("Permission denied or unavailable: enter lat/lon manually."),
-                    { timeout: 8000 });
+                    (pos) => { setGeoMsg("Location set \u2713"); setSt(x => ({ ...x, lat: Math.round(pos.coords.latitude * 100) / 100, lon: Math.round(pos.coords.longitude * 100) / 100 })); },
+                    (err) => setGeoMsg(
+                      err && err.code === 1 ? "Location blocked. Allow it from the icon in the address bar \u2014 on macOS also enable it in System Settings \u203a Privacy & Security \u203a Location Services for your browser."
+                      : err && err.code === 3 ? "Location timed out \u2014 try again, or type lat/lon below."
+                      : "Location unavailable \u2014 type your latitude and longitude below."),
+                    { timeout: 15000, maximumAge: 60000, enableHighAccuracy: false });
                 }} style={{ background: "#ADDAC5", color: C.ink, border: "none", borderRadius: 980, padding: "8px 14px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
                   Use my location</button>
-                {geoMsg && <span style={{ fontSize: 11, color: C.dim }}>{geoMsg}</span>}
+                {geoMsg && <span style={{ fontSize: 12, color: geoMsg.indexOf("\u2713") >= 0 ? C.ok : "#B25000", fontWeight: 600, flex: "1 1 240px" }}>{geoMsg}</span>}
               </div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 2, marginBottom: 8 }}>Solar disc today: {((I.sdiv || 0.0093) * R2D).toFixed(3)}° <span style={{ color: "#C7861A" }}>(0.525–{"0.543"}° across the year — Earth–Sun distance)</span></div>
               <Slider label="Projection azimuth (0=N 90=E 180=S 270=W)" value={st.projAz} set={up("projAz")} min={0} max={359} unit="°" />
@@ -1739,7 +1749,7 @@ export default function EliografoStudio() {
             </div>
             <canvas ref={projRef} width={860} height={430} style={{ width: "100%", borderRadius: 8, border: `1px solid ${C.line}`, display: "block" }} />
             <div style={{ marginTop: 10 }}>
-              <Slider label={st.tol === 0 ? "Tolerance: what if my distance is off" : `Piano spostato a ${(st.dist * (1 + st.tol / 100)).toFixed(2)} m (oro = nominale, azzurro = reale)`}
+              <Slider label={st.tol === 0 ? "Tolerance: what if my distance is off" : `Surface moved to ${(st.dist * (1 + st.tol / 100)).toFixed(2)} m (dark = nominal, blue = actual)`}
                 value={st.tol} set={up("tol")} min={-30} max={30} unit="%" />
             </div>
           </section>
