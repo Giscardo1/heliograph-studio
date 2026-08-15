@@ -25,7 +25,7 @@ def resolve_light(cfg):
         light["day_of_year"] = dt.timetuple().tm_yday
         elev, az_north = solar_position(dt, s["lat"], s["lon"])
         if elev <= 0:
-            raise ValueError(f"Il sole e' sotto l'orizzonte ({elev:.1f} deg) "
+            raise ValueError(f"The sun is below the horizon ({elev:.1f} deg) "
                              "a quella data/ora: scegli un altro momento.")
         # azimut relativo = azimut sole - azimut della direzione di proiezione
         light["sun"]["elevation_deg"] = elev
@@ -49,16 +49,16 @@ def compute_assignments(cfg):
         tilt = math.degrees(math.atan2(mean_n[1], mean_n[2]))
         cfg = json.loads(json.dumps(cfg))
         cfg["device"]["tilt_deg"] = tilt
-        print(f"  [info] inclinazione dispositivo auto: {tilt:.1f} deg "
-              "(0 = orizzontale, 90 = verticale rivolto in avanti)")
+        print(f"  [info] auto array tilt: {tilt:.1f} deg "
+              "(0 = horizontal, 90 = vertical facing forward)")
     rows, ctx = _compute(cfg)
     # vincolo fisico: la luce deve colpire il FRONTE dell'array (mai il retro)
     if any(r["v_dot_z"] <= 0.05 for r in rows):
-        raise ValueError("La luce arriva da dietro l'array: uno specchio non e' un "
-                         "vetro. Usa device.tilt_deg = \"auto\" o ruota il dispositivo.")
+        raise ValueError("Light comes from behind the array: a mirror is not a "
+                         "window. Use device.tilt_deg = \"auto\" or rotate the array.")
     exp = math.degrees(math.acos(max(-1.0, min(1.0, min(r["v_dot_z"] for r in rows)))))
     if exp > 60.0:
-        print(f"  [avviso] luce a {exp:.0f} gradi dal fronte dell'array: esposizione "
+        print(f"  [warning] luce a {exp:.0f} gradi dal fronte dell'array: esposizione "
               "debole, riduci l'angolo.")
     return rows, ctx
 
@@ -74,7 +74,7 @@ def _compute(cfg):
 
     targets2d, unknown = rasterize(cfg["text"]["string"], cfg["text"]["pitch_cm"] / 100.0)
     if unknown:
-        print(f"  [avviso] caratteri ignorati dal font: {unknown}")
+        print(f"  [warning] caratteri ignorati dal font: {unknown}")
 
     light = resolve_light(cfg)
     center = np.asarray(dev["center_m"], float)
@@ -154,13 +154,13 @@ def partition(offsets, footprint_mm, bed_wh_mm, shape="hex"):
     """
     offsets = np.asarray(offsets, dtype=float)
     if offsets.ndim != 2 or offsets.shape[1] != 2 or len(offsets) == 0:
-        raise ValueError("offsets non validi")
+        raise ValueError("invalid offsets")
     bw, bh = float(bed_wh_mm[0]), float(bed_wh_mm[1])
     fpx, fpy = footprint_xy(footprint_mm, shape)
     if bw <= fpx or bh <= fpy:
         raise ValueError(
-            f"Piatto {bw:.0f}x{bh:.0f} mm troppo piccolo: un singolo pilastro "
-            f"occupa {fpx:.1f}x{fpy:.1f} mm")
+            f"Print bed {bw:.0f}x{bh:.0f} mm is too small: a single pillar "
+            f"takes {fpx:.1f}x{fpy:.1f} mm")
     ux, uy = bw - fpx, bh - fpy        # larghezza utile per i centri
     cx0 = float(offsets[:, 0].min())
     cy0 = float(offsets[:, 1].min())
@@ -184,28 +184,28 @@ def generate(cfg, out_dir, bed_wh_mm=(220.0, 220.0)):
                                           dev["mirror_width_mm"] + 2 * margin)
     top_h = max(pil.get("base_height_mm", 12.0), needed)
     if top_h > pil.get("base_height_mm", 12.0):
-        print(f"  [info] altezza pilastri portata a {top_h:.1f} mm per "
-              "accomodare le inclinazioni richieste.")
+        print(f"  [info] pillar height raised to {top_h:.1f} mm to "
+              "accommodate the required tilts.")
     aligner = pil.get("aligner", True)
     footprint = dev["mirror_width_mm"] + 2 * margin + dev["gap_mm"]
 
     max_err = max(r["hit_err_m"] for r in rows)
     if max_err > 1e-6:
-        raise AssertionError(f"Autoverifica ottica fallita: errore {max_err:.2e} m")
+        raise AssertionError(f"Optical self-check failed: error {max_err:.2e} m")
     occ = occlusion_fraction(cfg, rows, ctx)
     if occ:
-        print(f"  [avviso] il pannello dell'array copre la vista all'osservatore: "
-              f"{occ*100:.0f}% dei punti nascosti. Cambia altezza array/scritta o posizione.")
+        print(f"  [warning] the array panel blocks the viewer's line of sight: "
+              f"{occ*100:.0f}% of the dots are hidden. Change the array/text height or position.")
     worst_inc = max(r["inc_deg"] for r in rows)
     if worst_inc > 60.0:
-        print(f"  [avviso] incidenza radente ({worst_inc:.0f} deg dalla normale): "
-              "gli specchi cattureranno pochissima luce. Con sole basso, "
-              "orienta la proiezione VERSO il sole (azimut proiezione ~ azimut sole).")
+        print(f"  [warning] incidenza radente ({worst_inc:.0f} deg dalla normale): "
+              "the mirrors will catch very little light. With a low sun, "
+              "aim the projection TOWARD the sun (projection azimuth ~ sun azimuth).")
     steep = [r for r in rows if r["tilt_deg"] > MAX_TILT_DEG]
     if steep:
-        print(f"  [avviso] {len(steep)} pilastri con inclinazione > {MAX_TILT_DEG} deg "
+        print(f"  [warning] {len(steep)} pillars tilted more than {MAX_TILT_DEG} deg "
               f"(max {max(r['tilt_deg'] for r in steep):.1f} deg): "
-              "valuta di inclinare il dispositivo o avvicinare il bersaglio.")
+              "consider tilting the array or moving the target closer.")
 
     if cfg.get("assignments"):
         provided = np.array([a["normal_local"] for a in cfg["assignments"]])
@@ -213,7 +213,7 @@ def generate(cfg, out_dir, bed_wh_mm=(220.0, 220.0)):
         if provided.shape == ours.shape:
             dev_max = float(np.abs(provided - ours).max())
             status = "OK" if dev_max < 1e-4 else "DIVERGENZA! Controlla i parametri."
-            print(f"  Verifica incrociata con l'app web: scarto max {dev_max:.2e} ({status})")
+            print(f"  Cross-check against the web app: max deviation {dev_max:.2e} ({status})")
 
     tiles, (nx, ny) = partition(ctx["offsets"], footprint, bed_wh_mm, dev["mirror_shape"])
     files = []

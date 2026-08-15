@@ -18,7 +18,7 @@ def polygon(shape, width_mm, n_rot_deg=0.0):
         R = width_mm / np.sqrt(2.0)
         ang = np.radians(np.arange(4) * 90.0 + 45.0 + n_rot_deg)
     else:
-        raise ValueError(f"Forma specchio sconosciuta: {shape}")
+        raise ValueError(f"Unknown mirror shape: {shape}")
     return np.stack([R * np.cos(ang), R * np.sin(ang)], axis=1)
 
 
@@ -59,7 +59,7 @@ def top_ring(poly2d, center, top_h, normal_local):
     passante per (center, top_h)."""
     n = np.asarray(normal_local, float)
     if n[2] <= 0.05:
-        raise ValueError("Normale locale quasi orizzontale: pilastro non stampabile.")
+        raise ValueError("Local normal is nearly horizontal: pillar is not printable.")
     pts = []
     for (px, py) in poly2d:
         z = top_h - (n[0] * px + n[1] * py) / n[2]
@@ -76,8 +76,8 @@ def pillar(center_ab, normal_local, shape, mirror_width_mm, margin_mm,
     bottom = np.array([[cx + p[0], cy + p[1], 0.0] for p in outer2d])
     top = top_ring(outer2d, (cx, cy), top_h_mm, normal_local)
     if top[:, 2].min() < 2.0:
-        raise ValueError("Pilastro troppo basso per l'inclinazione richiesta: "
-                         "aumenta l'altezza dei pilastri.")
+        raise ValueError("Pillar too short for the required tilt: "
+                         "increase the pillar height.")
     tris = _prism_between(bottom, top)
 
     if aligner:
@@ -106,10 +106,10 @@ def write_stl(triangles, path):
     interno: il generatore non deve fallire per una dipendenza opzionale."""
     tris = [np.asarray(t, dtype=float) for t in triangles]
     if not tris:
-        raise ValueError("Nessuna faccia da scrivere nello STL")
+        raise ValueError("No faces to write to the STL")
     for t in tris:
         if t.shape != (3, 3) or not np.isfinite(t).all():
-            raise ValueError("Triangolo STL non valido (forma errata o NaN/Inf)")
+            raise ValueError("Invalid STL triangle (bad shape or NaN/Inf)")
     try:
         from stl import mesh as stlmesh
     except ModuleNotFoundError:

@@ -121,7 +121,7 @@ def test_backlit_rejected():
     cfg = _base_cfg()
     cfg["light"]["sun"] = {"elevation_deg": 30, "azimuth_rel_deg": 0}
     cfg["device"]["tilt_deg"] = 60.0
-    with pytest.raises(ValueError, match="dietro l'array"):
+    with pytest.raises(ValueError, match="behind the array"):
         compute_assignments(cfg)
 
 

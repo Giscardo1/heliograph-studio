@@ -56,8 +56,8 @@ def match(mirrors_2d, targets_2d):
     if n_t == 0:
         raise ValueError("Nessun punto bersaglio: testo vuoto o caratteri ignoti.")
     if n_t > n_m:
-        raise ValueError(f"Servono {n_t} specchi ma la griglia ne ha {n_m}: "
-                         "ingrandisci la griglia o accorcia il testo.")
+        raise ValueError(f"Need {n_t} mirrors but the grid has {n_m}: "
+                         "enlarge the grid or shorten the text.")
     reps = int(np.ceil(n_m / n_t))
     t_ext = np.tile(targets_2d, (reps, 1))[:n_m]
     t_idx = np.tile(np.arange(n_t), reps)[:n_m]

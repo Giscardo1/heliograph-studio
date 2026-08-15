@@ -18,25 +18,25 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("config", help="file config.json")
     ap.add_argument("--bed", default="220x220",
-                    help="dimensioni piatto di stampa in mm, es. 220x220")
-    ap.add_argument("-o", "--out", default="output", help="cartella di output")
+                    help="print bed size in mm, e.g. 220x220")
+    ap.add_argument("-o", "--out", default="output", help="output folder")
     args = ap.parse_args()
 
     with open(args.config) as f:
         cfg = json.load(f)
     if cfg.get("schema_version") != 1:
-        sys.exit("Config non riconosciuto: atteso schema_version = 1.")
+        sys.exit("Unrecognised config: expected schema_version = 1.")
     bw, bh = (float(x) for x in args.bed.lower().split("x"))
 
-    print(f"Testo: {cfg['text']['string']!r}  |  sorgente: {cfg['light']['mode']}")
+    print(f"Text: {cfg['text']['string']!r}  |  light: {cfg['light']['mode']}")
     rows, files, report = generate(cfg, args.out, (bw, bh))
-    print(f"Specchi: {len(rows)}  |  inclinazione max: "
+    print(f"Mirrors: {len(rows)}  |  max tilt: "
           f"{max(r['tilt_deg'] for r in rows):.1f} deg")
     for path, npil, ntri in files:
-        print(f"  {path}  ({npil} pilastri, {ntri} triangoli)")
+        print(f"  {path}  ({npil} pillars, {ntri} triangles)")
     print(f"  {report}")
-    print("Fatto. Stampa gli STL con layer fini negli ultimi mm superiori "
-          "(le facce inclinate determinano gli angoli degli specchi).")
+    print("Done. Print the STL tiles with fine layers over the top few mm "
+          "(the slanted faces set the mirror angles).")
 
 
 if __name__ == "__main__":

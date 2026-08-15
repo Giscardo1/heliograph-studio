@@ -39,7 +39,7 @@ def to_light_vector(mirror_pos, light):
 
 
 def mirror_normal(mirror_pos, target_pos, to_light):
-    """Normale = bisettrice tra 'verso la sorgente' e 'verso il bersaglio'."""
+    """Normal = bisector between 'toward the source' and 'toward the target'."""
     to_target = normalize(np.asarray(target_pos, float) - np.asarray(mirror_pos, float))
     return normalize(normalize(to_light) + to_target)
 
@@ -81,10 +81,10 @@ def intersect_plane(origin, direction, P0, n_plane):
     d = normalize(direction)
     denom = np.dot(d, n_plane)
     if abs(denom) < 1e-9:
-        raise ValueError("Raggio parallelo al piano focale: nessuna intersezione.")
+        raise ValueError("Ray is parallel to the focal plane: no intersection.")
     t = np.dot(P0 - np.asarray(origin, float), n_plane) / denom
     if t <= 0:
-        raise ValueError("Il piano focale e' dietro lo specchio: geometria non valida.")
+        raise ValueError("The focal plane is behind the mirror: invalid geometry.")
     return np.asarray(origin, float) + t * d, t
 
 
@@ -111,7 +111,7 @@ def solar_divergence_rad(day_of_year=None):
 
 
 def air_mass(elev_deg):
-    """Kasten & Young (1989): massa d'aria ottica dall'altezza solare apparente."""
+    """Kasten & Young (1989): optical air mass from apparent solar elevation."""
     import math
     g = max(0.5, float(elev_deg))
     return 1.0 / (math.sin(math.radians(g)) + 0.50572 * (g + 6.07995) ** -1.6364)
