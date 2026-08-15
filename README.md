@@ -35,6 +35,28 @@ goes to him.
 | `webapp/src/` | React source of the app (built with esbuild). |
 | `tool/` | **The STL generator** — a Python package that takes the app's exported `config.json`, independently recomputes every mirror normal, cross-checks it against the app, and writes print-ready STL tiles + an assembly report. |
 
+## What you need
+
+Nothing to install for the design step — the app runs in the browser and writes the STL files
+itself. For the physical build:
+
+| | |
+|---|---|
+| **A 3D printer** | Any FDM printer with ~0.1 mm accuracy. The app asks for your bed size and splits the array into tiles that actually fit it (base seams only, so alignment is forgiving). |
+| **Filament** | PLA is fine indoors. Use **PETG or ASA if the array will sit in the sun** — a black PLA panel in direct summer sun can creep, and a pillar that sags by half a degree moves its dot by centimetres. |
+| **Mirror tiles** | 1-inch (25.4 mm) hexagonal self-adhesive mirror tiles are the easy default and match the app's defaults; square tiles work too. Search for *"hexagonal mirror tiles 1 inch"* or *"mirror mosaic tiles"*. |
+| **Glue** | Anything that bonds plastic to glass **and does not expand while curing** — a very thin coat of cyanoacrylate, or small dots of E6000 / neutral-cure silicone. Expanding glue (and too much of any glue) tilts the mirror and ruins the angle you just computed. |
+| **Optional** | Brim or adhesion spray for large tiles: a lifted corner bends every pillar above it. |
+| **The Sun** | Free. Availability varies by latitude and mood. |
+
+The mirror you pick changes the result measurably, so the app lets you choose it: first-surface
+glass reflects ~97% of the light, ordinary craft mirrors ~87%, acrylic ~82%. The **Materials &
+printing** page in the app covers all of this, and the generated ZIP contains an assembly guide
+written for your specific design.
+
+Ben Bartlett's original [supplies list](https://github.com/bencbartlett/3D-printed-mirror-array#supplies)
+has the exact products he used, including the fan trick for cyanoacrylate fumes.
+
 ## The workflow
 
 1. **Design** — open `webapp/index.html`. Set the light (real sun from date & location, or a lamp),
